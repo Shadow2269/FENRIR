@@ -57,6 +57,9 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
     ports = _parse_ports(raw_out)
     host_info = _parse_host_info(raw_out)
 
+    # ── Attack surface summary ─────────────────────────────────────────────────
+    lines += _attack_surface_summary(ports, host_info)
+
     if host_info:
         lines += [
             "## Host Information",
@@ -72,14 +75,18 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
         lines += [
             "## Open Ports & Services",
             "",
-            "| Port | State | Service | Version |",
-            "|---|---|---|---|",
+            "| Port | State | Service | Version | Sev | Note |",
+            "|---|---|---|---|---|---|",
         ]
         for p in ports:
-            state_icon = "🟢" if p["state"] == "open" else "🟡"
+            state_icon      = "🟢" if p["state"] == "open" else "🟡"
+            sev_icon, sev_note = _port_severity(p["port"])
+            ver_warn        = _check_vulnerable_version(p["service"], p["version"])
+            note_col        = ver_warn or sev_note or "—"
             lines.append(
                 f"| `{p['port']}` | {state_icon} {p['state']} "
-                f"| {p['service']} | {p['version']} |"
+                f"| {p['service']} | {p['version'] or '—'} "
+                f"| {sev_icon or '—'} | {note_col} |"
             )
         lines.append("")
 
@@ -233,6 +240,122 @@ def generate_redteam_report(report) -> str:
 
 # ── Nmap helpers ──────────────────────────────────────────────────────────────
 
+_PORT_SEVERITY: dict[int, tuple[str, str]] = {
+    # 🔴 CRITICAL — plaintext / legacy / known backdoors
+    21:    ("🔴", "FTP — plaintext credentials, often exploitable"),
+    23:    ("🔴", "Telnet — unencrypted; replace with SSH"),
+    69:    ("🔴", "TFTP — unauthenticated file transfer"),
+    79:    ("🔴", "Finger — user enumeration"),
+    512:   ("🔴", "rexec — remote exec, no encryption"),
+    513:   ("🔴", "rlogin — legacy remote login"),
+    514:   ("🔴", "rsh — remote shell, no authentication"),
+    # 🟠 HIGH — remote management / SMB / exposed databases
+    25:    ("🟠", "SMTP — verify relay is not open"),
+    110:   ("🟠", "POP3 — plaintext mail retrieval"),
+    143:   ("🟠", "IMAP — plaintext mail retrieval"),
+    161:   ("🟠", "SNMP — often misconfigured, information leakage"),
+    135:   ("🟠", "MSRPC — Windows RPC, restrict from internet"),
+    139:   ("🟠", "NetBIOS — legacy Windows file sharing"),
+    445:   ("🟠", "SMB — high-value target (EternalBlue, ransomware)"),
+    3389:  ("🟠", "RDP — brute-force / BlueKeep target"),
+    5900:  ("🟠", "VNC — remote desktop, often weak auth"),
+    # 🟡 MEDIUM — databases / internal services
+    3306:  ("🟡", "MySQL — database should not be internet-facing"),
+    5432:  ("🟡", "PostgreSQL — database should not be internet-facing"),
+    6379:  ("🟡", "Redis — often unauthenticated by default"),
+    27017: ("🟡", "MongoDB — often unauthenticated by default"),
+    9200:  ("🟡", "Elasticsearch — often unauthenticated by default"),
+    2181:  ("🟡", "Zookeeper — no authentication by default"),
+    11211: ("🟡", "Memcached — no auth, amplification DDoS vector"),
+    # 🔵 INFO — common services worth noting
+    22:   ("🔵", "SSH — ensure key-based auth, disable root login"),
+    80:   ("🔵", "HTTP — check if HTTPS is also available"),
+    8080: ("🔵", "HTTP-alt — often dev/proxy, verify exposure"),
+    8443: ("🔵", "HTTPS-alt — verify certificate validity"),
+}
+
+_VULNERABLE_VERSIONS = [
+    # (service_keyword, version_keyword, warning)
+    ("apache", "2.4.49",  "CVE-2021-41773 — Path Traversal/RCE (CVSS 9.8)"),
+    ("apache", "2.4.50",  "CVE-2021-42013 — Path Traversal/RCE bypass (CVSS 9.8)"),
+    ("apache", "2.2.",    "EOL since 2018 — no security patches"),
+    ("vsftpd", "2.3.4",   "CVE-2011-2523 — Backdoor, instant root shell"),
+    ("proftpd","1.3.5",   "CVE-2015-3306 — Remote code execution"),
+    ("openssl","0.",      "EOL — numerous critical CVEs"),
+    ("openssl","1.0.",    "EOL since 2020 — no security patches"),
+    ("openssl","1.1.0",   "EOL since 2019 — no security patches"),
+    ("php",    "5.",      "EOL since 2019 — no security patches"),
+    ("php",    "7.0",     "EOL since 2019 — no security patches"),
+    ("php",    "7.1",     "EOL since 2019 — no security patches"),
+    ("php",    "7.2",     "EOL since 2020 — no security patches"),
+    ("php",    "7.3",     "EOL since 2021 — no security patches"),
+    ("iis",    "6.0",     "EOL — CVE-2017-7269 Buffer Overflow RCE"),
+    ("iis",    "7.0",     "EOL — no security patches"),
+    ("openssh","3.",      "Multiple critical CVEs — upgrade immediately"),
+    ("openssh","4.",      "Multiple critical CVEs — upgrade immediately"),
+    ("openssh","5.",      "Multiple CVEs — upgrade recommended"),
+    ("openssh","6.",      "Multiple CVEs — upgrade recommended"),
+    ("samba",  "3.",      "CVE-2017-7494 — SambaCry RCE"),
+    ("samba",  "4.0",     "Multiple RCE CVEs — upgrade immediately"),
+    ("redis",  "2.",      "EOL — numerous CVEs"),
+    ("redis",  "3.",      "EOL — numerous CVEs"),
+]
+
+
+def _port_severity(port_str: str) -> tuple[str, str]:
+    """Return (icon, note) for a port string like '22/tcp'. Empty strings if unknown."""
+    try:
+        port_num = int(port_str.split("/")[0])
+    except ValueError:
+        return "", ""
+    return _PORT_SEVERITY.get(port_num, ("", ""))
+
+
+def _check_vulnerable_version(service: str, version: str) -> str:
+    """Return a warning string if the service+version matches a known-vulnerable pattern."""
+    if not version:
+        return ""
+    combined = f"{service.lower()} {version.lower()}"
+    for svc_kw, ver_kw, warning in _VULNERABLE_VERSIONS:
+        if svc_kw in combined and ver_kw in combined:
+            return f"⚠ {warning}"
+    return ""
+
+
+def _attack_surface_summary(ports: list, host_info: dict) -> list[str]:
+    open_ports     = [p for p in ports if p["state"] == "open"]
+    filtered_ports = [p for p in ports if p["state"] == "filtered"]
+    protocols      = sorted({p["port"].split("/")[1] for p in open_ports}) if open_ports else []
+    services       = sorted({p["service"] for p in open_ports if p["service"] not in ("unknown", "tcpwrapped")})
+
+    risky    = [(p, *_port_severity(p["port"])) for p in open_ports]
+    critical = [(p, note) for p, icon, note in risky if icon == "🔴"]
+    high     = [(p, note) for p, icon, note in risky if icon == "🟠"]
+    medium   = [(p, note) for p, icon, note in risky if icon == "🟡"]
+
+    lines = [
+        "## Attack Surface Summary",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Open Ports**     | {len(open_ports)} |",
+        f"| **Filtered Ports** | {len(filtered_ports)} |",
+        f"| **Protocols**      | {', '.join(protocols) if protocols else '—'} |",
+        f"| **Services**       | {', '.join(services[:8]) if services else '—'} |",
+    ]
+    if critical:
+        names = ", ".join(f"`{p['port']}`" for p, _ in critical)
+        lines.append(f"| **🔴 Critical Ports** | {names} |")
+    if high:
+        names = ", ".join(f"`{p['port']}`" for p, _ in high)
+        lines.append(f"| **🟠 High-Risk Ports** | {names} |")
+    if medium:
+        names = ", ".join(f"`{p['port']}`" for p, _ in medium)
+        lines.append(f"| **🟡 Medium-Risk Ports** | {names} |")
+    lines.append("")
+    return lines
+
+
 def _parse_ports(raw: str) -> list[dict]:
     """Extract port rows from nmap -sV output."""
     ports = []
@@ -312,17 +435,33 @@ def _nmap_risk(nmap_result: dict, cve_results: list) -> tuple[str, str]:
 def _nmap_recommendations(ports: list, cve_results: list) -> list[str]:
     recs = []
     open_ports = [p for p in ports if p["state"] == "open"]
+    services   = {p["service"].lower() for p in open_ports}
 
-    # Service-specific hints
-    services = {p["service"].lower() for p in open_ports}
+    # ── Vulnerable version warnings ───────────────────────────────────────────
+    for p in open_ports:
+        warn = _check_vulnerable_version(p["service"], p["version"])
+        if warn:
+            recs.append(f"**{p['port']} ({p['service']}):** {warn}")
+
+    # ── Critical port warnings ─────────────────────────────────────────────────
+    for p in open_ports:
+        icon, note = _port_severity(p["port"])
+        if icon == "🔴":
+            recs.append(f"**{p['port']} ({p['service']}):** {note} — disable or replace immediately.")
+
+    # ── High-risk port warnings ────────────────────────────────────────────────
+    for p in open_ports:
+        icon, note = _port_severity(p["port"])
+        if icon == "🟠":
+            recs.append(f"**{p['port']} ({p['service']}):** {note}")
+
+    # ── Service-specific hints ────────────────────────────────────────────────
     if "ssh" in services:
         recs.append("**SSH:** Ensure key-based auth only; disable root login; update to latest OpenSSH.")
     if "http" in services and "https" not in services:
         recs.append("**HTTP (no HTTPS):** Consider redirecting all traffic to HTTPS.")
-    if "msrpc" in services or "netbios-ssn" in services or "microsoft-ds" in services:
-        recs.append("**Windows services (135/139/445):** Firewall these ports from the internet.")
 
-    # CVE-based hints
+    # ── CVE-based hints ───────────────────────────────────────────────────────
     if cve_results:
         cve_count = sum(len(r.cves) for r in cve_results)
         if cve_count:
