@@ -9,3 +9,5 @@ result/
 .vscode/
 gobuster.exe
 wordlists/
+CLAUDE.md
+.claude/
