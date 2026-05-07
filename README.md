@@ -14,6 +14,7 @@ and automated AI red-teaming with CVSS scoring.
 ## Setup
 pip install -r requirements.txt
 cp .env.example .env   # API Keys eintragen
+install gobuster.exe and put it in ../SecurityTool
 
 ## Usage
 python main.py

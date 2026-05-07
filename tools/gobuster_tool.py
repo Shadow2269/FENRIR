@@ -84,7 +84,7 @@ def run_gobuster(
     wordlist: str = "wordlists/common.txt",
     extensions: list[str] | None = None,
     threads: int = 10,
-    timeout: int = 180,
+    timeout: int = 600,
     extra_flags: list[str] | None = None,
     confirmed: bool = False,
 ) -> GobusterResult:
@@ -155,25 +155,45 @@ def run_gobuster(
         cmd += extra_flags
 
     # ── Run ───────────────────────────────────────────────────────────────────
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+    def _run(command):
+        try:
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        except Exception:
+            return None
+
+    proc = _run(cmd)
+    if proc is None:
         return GobusterResult(
             success=False,
             target=target_url,
-            error=f"gobuster timed out after {timeout}s.",
+            error=f"gobuster timed out or failed after {timeout}s.",
         )
-    except Exception as exc:
-        return GobusterResult(
-            success=False,
-            target=target_url,
-            error=str(exc),
-        )
+
+    # ── Wildcard auto-retry ───────────────────────────────────────────────────
+    wildcard_pattern = re.compile(r"Length:\s*(\d+)", re.IGNORECASE)
+    stderr_combined  = (proc.stderr or "") + (proc.stdout or "")
+    wildcard_match   = (
+        "non existing urls" in stderr_combined.lower()
+        and wildcard_pattern.search(stderr_combined)
+    )
+    if wildcard_match:
+        wc_length = wildcard_pattern.search(stderr_combined).group(1)
+        warn(f"Wildcard detected (all 404s → 200, size {wc_length}B) — retrying with --exclude-length {wc_length}")
+        retry_cmd = cmd + ["--exclude-length", wc_length]
+        proc = _run(retry_cmd)
+        if proc is None:
+            return GobusterResult(
+                success=False,
+                target=target_url,
+                error=f"gobuster timed out during wildcard-retry after {timeout}s.",
+            )
 
     output   = proc.stdout
     findings = _parse_gobuster_output(output)

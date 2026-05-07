@@ -41,7 +41,7 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v1.0.1", style="bold white")
+    banner.append("  v1.0.5", style="bold white")
 
     console.print(Panel(
         banner,
@@ -320,7 +320,7 @@ def print_redteam_results(report):
 def print_report_saved(path: str):
     console.print()
     console.print(Panel(
-        f"[bold green]✓[/bold green]  Report saved:\n  [cyan]{path}[/cyan]\n  [dim]{path.replace('.md', '.html')}[/dim]",
+        f"[bold green]✓[/bold green]  Report saved:\n  [cyan]{path}[/cyan]",
         border_style="green",
         padding=(0, 2),
     ))
