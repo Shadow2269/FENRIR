@@ -61,9 +61,13 @@ def _do_nmap(target: str):
             return
         confirmed = True
 
-    with ui.spinner(f"Scanning {target} …") as prog:
-        task = prog.add_task(f"nmap -sV {target}", total=None)
-        result = run_nmap(target, confirmed=confirmed)
+    from tools.nmap_tool import SCAN_TYPES
+    scan_key = ui.prompt_scan_type()
+    scan_name, _, flags, timeout = SCAN_TYPES[scan_key]
+
+    with ui.spinner(f"[{scan_name}] Scanning {target} …") as prog:
+        task = prog.add_task(f"nmap {' '.join(flags)} {target}", total=None)
+        result = run_nmap(target, flags=flags, confirmed=confirmed, timeout=timeout)
         prog.update(task, completed=True)
 
     ui.print_nmap_result(result)

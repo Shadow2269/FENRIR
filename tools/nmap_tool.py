@@ -7,13 +7,29 @@ import shutil
 from security.validator import validate_tool
 
 
-def run_nmap(target: str, flags: list[str] | None = None, confirmed: bool = False) -> dict:
+# Vordefinierte Scan-Profile: key → (label, beschreibung, flags, timeout)
+SCAN_TYPES: dict[str, tuple[str, str, list[str], int]] = {
+    "1": ("Quick Scan",      "Top 100 Ports, schnell",                  ["-T4", "-F"],          60),
+    "2": ("Service Scan",    "Versionserkennung (Standard)",             ["-sV"],               120),
+    "3": ("Full Port Scan",  "Alle 65535 Ports + Versionserkennung",    ["-sV", "-p-"],        600),
+    "4": ("OS Detection",    "OS-Fingerprinting + Versionserkennung",   ["-sV", "-O"],         180),
+}
+
+
+def run_nmap(
+    target: str,
+    flags: list[str] | None = None,
+    confirmed: bool = False,
+    timeout: int = 120,
+) -> dict:
     """
     Run nmap against *target* after scope validation.
 
     Args:
-        target: IP address, hostname, or CIDR range.
-        flags:  Additional nmap flags (default: ["-sV"]).
+        target:    IP address, hostname, or CIDR range.
+        flags:     Additional nmap flags (default: ["-sV"]).
+        confirmed: Skip target scope check (user confirmed interactively).
+        timeout:   Max seconds before killing nmap (default 120).
 
     Returns:
         dict with keys: success (bool), target, output (str), error (str)
@@ -36,7 +52,7 @@ def run_nmap(target: str, flags: list[str] | None = None, confirmed: bool = Fals
         }
 
     cmd = ["nmap"] + (flags or ["-sV"]) + [target]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
     return {
         "success": result.returncode == 0,

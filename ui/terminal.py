@@ -96,6 +96,27 @@ def prompt_main_menu() -> str:
 
 # ── Target input ──────────────────────────────────────────────────────────────
 
+def prompt_scan_type() -> str:
+    """Show nmap scan-type menu and return the chosen key ('1'–'4')."""
+    from tools.nmap_tool import SCAN_TYPES
+
+    table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2), show_edge=False)
+    table.add_column("key",   style="bold red",  width=4)
+    table.add_column("name",  style="bold white", width=18)
+    table.add_column("desc",  style="dim",        width=46)
+
+    for key, (name, desc, _, _) in SCAN_TYPES.items():
+        table.add_row(f"[{key}]", name, desc)
+
+    console.print(Panel(table, title="[bold]Scan Type[/bold]", border_style="dim red"))
+    return Prompt.ask(
+        "[bold red]>[/bold red] Scan-Typ wählen",
+        choices=list(SCAN_TYPES.keys()),
+        default="2",
+        show_choices=True,
+    )
+
+
 def prompt_target(label: str = "Target IP / hostname") -> str:
     return Prompt.ask(f"[bold red]>[/bold red] {label}").strip()
 
