@@ -23,9 +23,12 @@ def is_allowed_target(target: str) -> bool:
         return target in ALLOWED_TARGETS
 
 
-def validate_tool(tool: str, target: str) -> tuple[bool, str]:
+def validate_tool(tool: str, target: str, authorized: bool = False) -> tuple[bool, str]:
     """
     Validate that *tool* is permitted and *target* is in scope.
+
+    Args:
+        authorized: If True, skip the target scope check (user confirmed interactively).
 
     Returns:
         (True, "OK")             — allowed
@@ -34,7 +37,7 @@ def validate_tool(tool: str, target: str) -> tuple[bool, str]:
     if tool not in ALLOWED_TOOLS:
         return False, f"Tool '{tool}' is not in the allowed-tools list: {ALLOWED_TOOLS}"
 
-    if not is_allowed_target(target):
+    if not authorized and not is_allowed_target(target):
         return False, (
             f"Target '{target}' is outside the allowed scope. "
             f"Allowed: {ALLOWED_TARGETS}"

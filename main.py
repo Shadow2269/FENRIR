@@ -45,9 +45,17 @@ def run_chat():
 # ── Mode: nmap scan ───────────────────────────────────────────────────────────
 
 def _do_nmap(target: str):
+    from security.validator import is_allowed_target
+    confirmed = False
+    if not is_allowed_target(target):
+        if not ui.confirm_scan_target(target):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
     with ui.spinner(f"Scanning {target} …") as prog:
         task = prog.add_task(f"nmap -sV {target}", total=None)
-        result = run_nmap(target)
+        result = run_nmap(target, confirmed=confirmed)
         prog.update(task, completed=True)
 
     ui.print_nmap_result(result)
@@ -152,14 +160,23 @@ def run_redteam_mode(target_name: str, mode: str = "anthropic", http_url: str = 
 # ── Mode: gobuster scan ───────────────────────────────────────────────────────
 
 def run_gobuster_mode(target_url: str, wordlist: str = "wordlists/common.txt"):
-    from tools.gobuster_tool import run_gobuster
+    from tools.gobuster_tool import run_gobuster, _extract_hostname
+    from security.validator import is_allowed_target
+
+    confirmed = False
+    hostname = _extract_hostname(target_url)
+    if not is_allowed_target(hostname):
+        if not ui.confirm_scan_target(target_url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
 
     ui.print_info(f"Starting gobuster scan on: {target_url}")
     ui.print_info(f"Wordlist: {wordlist}")
 
     with ui.spinner(f"Scanning {target_url} …") as prog:
         task = prog.add_task(f"gobuster dir {target_url}", total=None)
-        result = run_gobuster(target_url, wordlist=wordlist)
+        result = run_gobuster(target_url, wordlist=wordlist, confirmed=confirmed)
         prog.update(task, completed=True)
 
     _print_gobuster_result(result)

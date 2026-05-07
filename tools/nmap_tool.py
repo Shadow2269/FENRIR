@@ -7,7 +7,7 @@ import shutil
 from security.validator import validate_tool
 
 
-def run_nmap(target: str, flags: list[str] | None = None) -> dict:
+def run_nmap(target: str, flags: list[str] | None = None, confirmed: bool = False) -> dict:
     """
     Run nmap against *target* after scope validation.
 
@@ -26,7 +26,7 @@ def run_nmap(target: str, flags: list[str] | None = None) -> dict:
             "error": "nmap is not installed or not in PATH.",
         }
 
-    ok, reason = validate_tool("nmap", target)
+    ok, reason = validate_tool("nmap", target, authorized=confirmed)
     if not ok:
         return {
             "success": False,

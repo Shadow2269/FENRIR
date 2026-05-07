@@ -86,6 +86,7 @@ def run_gobuster(
     threads: int = 10,
     timeout: int = 180,
     extra_flags: list[str] | None = None,
+    confirmed: bool = False,
 ) -> GobusterResult:
     """
     Run gobuster dir against *target_url* after scope validation.
@@ -103,7 +104,7 @@ def run_gobuster(
     """
     # ── Scope check ───────────────────────────────────────────────────────────
     hostname = _extract_hostname(target_url)
-    ok, reason = validate_tool("gobuster", hostname)
+    ok, reason = validate_tool("gobuster", hostname, authorized=confirmed)
     if not ok:
         return GobusterResult(
             success=False,

@@ -100,6 +100,15 @@ def prompt_target(label: str = "Target IP / hostname") -> str:
     return Prompt.ask(f"[bold red]>[/bold red] {label}").strip()
 
 
+def confirm_scan_target(target: str) -> bool:
+    """Ask the user to confirm authorization for an unknown target. Returns True if confirmed."""
+    return Confirm.ask(
+        f"[yellow]⚠ Target '[bold]{target}[/bold]' ist nicht in der Allowlist.\n"
+        "  Bist du autorisiert, dieses Ziel zu scannen?[/yellow]",
+        default=False,
+    )
+
+
 def prompt_redteam_target() -> tuple[str, str, str]:
     """Returns (target_name, mode, http_url)."""
     name = Prompt.ask("[bold red]>[/bold red] Target AI name (e.g. my-chatbot)").strip()
