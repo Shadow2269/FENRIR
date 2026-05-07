@@ -29,6 +29,7 @@ class GobusterResult:
     findings: list[GobusterFinding] = field(default_factory=list)
     output: str = ""
     error: str = ""
+    wildcard_excluded: str = ""  # response size excluded via --exclude-length on auto-retry
 
     @property
     def found_paths(self) -> list[GobusterFinding]:
@@ -183,10 +184,11 @@ def run_gobuster(
         "non existing urls" in stderr_combined.lower()
         and wildcard_pattern.search(stderr_combined)
     )
+    wc_excluded = ""
     if wildcard_match:
-        wc_length = wildcard_pattern.search(stderr_combined).group(1)
-        warn(f"Wildcard detected (all 404s → 200, size {wc_length}B) — retrying with --exclude-length {wc_length}")
-        retry_cmd = cmd + ["--exclude-length", wc_length]
+        wc_excluded = wildcard_pattern.search(stderr_combined).group(1)
+        warn(f"Wildcard detected (all 404s → 200, size {wc_excluded}B) — retrying with --exclude-length {wc_excluded}")
+        retry_cmd = cmd + ["--exclude-length", wc_excluded]
         proc = _run(retry_cmd)
         if proc is None:
             return GobusterResult(
@@ -204,4 +206,5 @@ def run_gobuster(
         findings=findings,
         output=output,
         error=proc.stderr,
+        wildcard_excluded=wc_excluded,
     )

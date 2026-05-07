@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 venv/
-reports/
 result/
 *.egg-info/
 .vscode/
