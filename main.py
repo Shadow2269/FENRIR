@@ -46,6 +46,14 @@ def run_chat():
 
 def _do_nmap(target: str):
     from security.validator import is_allowed_target
+    # Nmap erwartet einen Hostnamen/IP, keine URL — Schema abstreifen
+    for prefix in ("https://", "http://"):
+        if target.startswith(prefix):
+            stripped = target[len(prefix):].rstrip("/")
+            ui.print_info(f"URL erkannt — verwende Hostname: {stripped}")
+            target = stripped
+            break
+
     confirmed = False
     if not is_allowed_target(target):
         if not ui.confirm_scan_target(target):
