@@ -3,43 +3,10 @@ main.py — FENRIR
 Flexible Engine for Network Reconnaissance & Intelligent Red-teaming
 """
 import sys
+import re
 from ui import terminal as ui
-from ai_engine import ask_ai
-from tool_parser import parse_tool
 from tools.nmap_tool import run_nmap
-from reports.report_generator import generate_nmap_report, generate_redteam_report, generate_gobuster_report
-
-
-# ── Mode: interactive chat ────────────────────────────────────────────────────
-
-def run_chat():
-    ui.print_chat_header()
-    history: list[dict] = []
-
-    while True:
-        try:
-            user_input = ui.prompt_chat_input()
-        except (EOFError, KeyboardInterrupt):
-            break
-
-        if user_input.lower() in ("exit", "quit", ""):
-            break
-
-        with ui.spinner("Thinking …") as prog:
-            task = prog.add_task("AI is thinking …", total=None)
-            response = ask_ai(user_input, conversation_history=history)
-            prog.update(task, completed=True)
-
-        history.append({"role": "user",      "content": user_input})
-        history.append({"role": "assistant",  "content": response})
-
-        ui.print_ai_message(response)
-
-        # Check if the AI wants to run a tool
-        tool, target = parse_tool(response)
-        if tool == "nmap" and target:
-            ui.print_info(f"AI requested nmap scan on '{target}'")
-            _do_nmap(target)
+from reports.report_generator import generate_nmap_report, generate_redteam_report, generate_gobuster_report, generate_full_scan_report
 
 
 # ── Mode: nmap scan ───────────────────────────────────────────────────────────
@@ -82,19 +49,22 @@ def _do_nmap(target: str):
             ui.print_info(f"Running CVE lookup for {len(services)} service(s) …")
             with ui.ScanProgress(total=len(services), label="CVE Lookup") as prog:
                 cve_results = []
-                import time as _time
-                from tools.cve_lookup import lookup_cves, ServiceCVEResult, REQUEST_DELAY
+                from tools.cve_lookup import lookup_cves, ServiceCVEResult
                 for svc in services:
                     keyword = f"{svc['product']} {svc['version']}".strip()
                     prog.advance(keyword or svc["service"])
                     if keyword:
-                        cves = lookup_cves(keyword, api_key=NVD_API_KEY)
+                        cves = lookup_cves(
+                            keyword,
+                            product=svc["product"],
+                            version=svc["version"],
+                            api_key=NVD_API_KEY,
+                        )
                         cve_results.append(ServiceCVEResult(
                             port=svc["port"], protocol=svc["protocol"],
                             service=svc["service"], product=svc["product"],
                             version=svc["version"], cves=cves,
                         ))
-                        _time.sleep(REQUEST_DELAY)
 
             ui.print_cve_results(cve_results)
             # Inject CVE results into the nmap_result so the report includes them
@@ -234,6 +204,166 @@ def _print_gobuster_result(result):
         f"{len(result.findings)} total"
     )
 
+# ── Mode: Full Scan ───────────────────────────────────────────────────────────
+
+def _strip_url_scheme(target: str) -> str:
+    for prefix in ("https://", "http://"):
+        if target.startswith(prefix):
+            stripped = target[len(prefix):].rstrip("/")
+            ui.print_info(f"URL detected — using hostname: {stripped}")
+            return stripped
+    return target
+
+
+def _detect_web_ports(nmap_output: str, target: str) -> list[tuple[int, bool]]:
+    """Return (port, is_https) for HTTP/HTTPS services found in nmap output."""
+    from tools.cve_lookup import parse_nmap_services
+    services = parse_nmap_services(nmap_output)
+    result = []
+    seen = set()
+    for svc in services:
+        port    = svc["port"]
+        service = svc["service"].lower()
+        is_https = (
+            service.startswith("ssl/") or
+            "https" in service or
+            port in (443, 8443, 4443)
+        )
+        is_http = (
+            "http" in service or
+            port in (80, 8080, 8000, 3000, 5000, 8888)
+        )
+        if (is_http or is_https) and port not in seen:
+            seen.add(port)
+            result.append((port, is_https))
+    return result
+
+
+def _detect_tls_ports(nmap_output: str) -> list[int]:
+    """Return port numbers that carry TLS from nmap output."""
+    from tools.cve_lookup import parse_nmap_services
+    services = parse_nmap_services(nmap_output)
+    tls_ports = []
+    for svc in services:
+        service = svc["service"].lower()
+        port    = svc["port"]
+        if service.startswith("ssl/") or "https" in service or port in (443, 8443, 4443, 465, 587, 993, 995):
+            tls_ports.append(port)
+    return tls_ports
+
+
+def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
+    from security.validator import is_allowed_target
+    from tools.cve_lookup import parse_nmap_services, lookup_cves, ServiceCVEResult
+    from tools.ssl_tool import check_ssl
+    from tools.http_headers_tool import check_http_headers
+    from config import NVD_API_KEY
+
+    target = _strip_url_scheme(target)
+
+    confirmed = False
+    if not is_allowed_target(target):
+        if not ui.confirm_scan_target(target):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    include_gobuster = ui.confirm_gobuster()
+    total_steps = 5 if include_gobuster else 4
+
+    full_result = {
+        "target":          target,
+        "nmap_result":     {},
+        "cve_results":     [],
+        "ssl_results":     [],
+        "http_results":    [],
+        "gobuster_result": None,
+    }
+
+    # ── Step 1: Nmap ──────────────────────────────────────────────────────────
+    ui.print_scan_step(1, total_steps, f"Nmap Service Scan — {target}")
+    with ui.spinner(f"Scanning {target} …") as prog:
+        task = prog.add_task("nmap -sV ...", total=None)
+        nmap_result = run_nmap(target, flags=["-sV"], confirmed=confirmed, timeout=180)
+        prog.update(task, completed=True)
+
+    full_result["nmap_result"] = nmap_result
+    ui.print_nmap_result(nmap_result)
+
+    if not nmap_result["success"]:
+        ui.print_error(f"Nmap failed: {nmap_result['error']}")
+        return
+
+    services = parse_nmap_services(nmap_result["output"])
+    ui.print_info(f"{len(services)} versioned service(s) found")
+
+    # ── Step 2: CVE Lookup ────────────────────────────────────────────────────
+    ui.print_scan_step(2, total_steps, f"CVE Lookup ({len(services)} service(s))")
+    if services:
+        with ui.ScanProgress(total=len(services), label="CVE Lookup") as prog:
+            for svc in services:
+                keyword = f"{svc['product']} {svc['version']}".strip()
+                prog.advance(keyword or svc["service"])
+                if keyword:
+                    cves = lookup_cves(
+                        keyword,
+                        product=svc["product"],
+                        version=svc["version"],
+                        api_key=NVD_API_KEY,
+                    )
+                    full_result["cve_results"].append(ServiceCVEResult(
+                        port=svc["port"], protocol=svc["protocol"],
+                        service=svc["service"], product=svc["product"],
+                        version=svc["version"], cves=cves,
+                    ))
+        total_cves = sum(len(r.cves) for r in full_result["cve_results"])
+        ui.print_cve_results(full_result["cve_results"])
+        ui.print_info(f"{total_cves} CVE(s) found")
+
+    # ── Step 3: SSL/TLS ───────────────────────────────────────────────────────
+    tls_ports = _detect_tls_ports(nmap_result["output"])
+    ui.print_scan_step(3, total_steps, f"SSL/TLS Analysis ({len(tls_ports)} port(s))")
+    for port in tls_ports:
+        ui.print_info(f"  Checking {target}:{port} …")
+        ssl_res = check_ssl(target, port)
+        full_result["ssl_results"].append(ssl_res)
+    ui.print_ssl_results(full_result["ssl_results"])
+
+    # ── Step 4: HTTP Security Headers ─────────────────────────────────────────
+    web_ports = _detect_web_ports(nmap_result["output"], target)
+    ui.print_scan_step(4, total_steps, f"HTTP Security Headers ({len(web_ports)} URL(s))")
+    for port, is_https in web_ports:
+        ui.print_info(f"  Checking {'https' if is_https else 'http'}://{target}:{port} …")
+        http_res = check_http_headers(target, port, use_tls=is_https)
+        full_result["http_results"].append(http_res)
+    ui.print_http_header_results(full_result["http_results"])
+
+    # ── Step 5: Gobuster (optional) ───────────────────────────────────────────
+    if include_gobuster and web_ports:
+        first_port, first_https = web_ports[0]
+        scheme = "https" if first_https else "http"
+        gobuster_url = (
+            f"{scheme}://{target}/"
+            if (first_https and first_port == 443) or (not first_https and first_port == 80)
+            else f"{scheme}://{target}:{first_port}/"
+        )
+        ui.print_scan_step(5, total_steps, f"Directory Scan — {gobuster_url}")
+        from tools.gobuster_tool import run_gobuster
+        with ui.spinner(f"Gobuster — {gobuster_url} …") as prog:
+            task = prog.add_task("gobuster dir ...", total=None)
+            gobuster_result = run_gobuster(gobuster_url, wordlist=wordlist, confirmed=confirmed)
+            prog.update(task, completed=True)
+        full_result["gobuster_result"] = gobuster_result
+        _print_gobuster_result(gobuster_result)
+    elif include_gobuster:
+        ui.print_info("No HTTP/HTTPS ports found — skipping Gobuster.")
+
+    # ── Generate report ───────────────────────────────────────────────────────
+    ui.print_info("Generating report …")
+    path = generate_full_scan_report(full_result)
+    ui.print_report_saved(path)
+
+
 # ── Interactive menu loop ─────────────────────────────────────────────────────
 
 def run_menu():
@@ -247,8 +377,11 @@ def run_menu():
             ui.console.print("\n[dim]Goodbye.[/dim]\n")
             break
 
-        elif mode == "chat":
-            run_chat()
+        elif mode == "fullscan":
+            target = ui.prompt_target("Target IP / hostname / domain")
+            if target:
+                run_full_scan_mode(target)
+                input("\n  Press Enter to return to menu …")
 
         elif mode == "nmap":
             target = ui.prompt_target("Target IP / hostname / CIDR")
@@ -281,9 +414,12 @@ if __name__ == "__main__":
         # No args → show the interactive menu
         run_menu()
 
-    elif args[0] == "chat":
+    elif args[0] == "fullscan":
+        if len(args) < 2:
+            ui.print_error("fullscan mode requires a target. Example: python main.py fullscan 192.168.1.1")
+            sys.exit(1)
         ui.print_banner()
-        run_chat()
+        run_full_scan_mode(args[1])
 
     elif args[0] == "nmap":
         if len(args) < 2:

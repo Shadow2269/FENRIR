@@ -9,10 +9,11 @@ from security.validator import validate_tool
 
 # Vordefinierte Scan-Profile: key → (label, beschreibung, flags, timeout)
 SCAN_TYPES: dict[str, tuple[str, str, list[str], int]] = {
-    "1": ("Quick Scan",      "Top 100 Ports, schnell",                  ["-T4", "-F"],          60),
-    "2": ("Service Scan",    "Versionserkennung (Standard)",             ["-sV"],               120),
-    "3": ("Full Port Scan",  "Alle 65535 Ports + Versionserkennung",    ["-sV", "-p-"],        600),
-    "4": ("OS Detection",    "OS-Fingerprinting + Versionserkennung",   ["-sV", "-O"],         180),
+    "1": ("Quick Scan",      "Top 100 Ports, schnell",                              ["-T4", "-F"],                     60),
+    "2": ("Service Scan",    "Versionserkennung (Standard)",                        ["-sV"],                          120),
+    "3": ("Full Port Scan",  "Alle 65535 Ports + Versionserkennung",               ["-sV", "-p-"],                   600),
+    "4": ("OS Detection",    "OS-Fingerprinting + Versionserkennung",              ["-sV", "-O"],                    180),
+    "5": ("Vuln Scan",       "NSE Vuln-Scripts (EternalBlue, Shellshock, etc.)",   ["-sV", "--script", "vuln"],      900),
 }
 
 

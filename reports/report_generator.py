@@ -1,11 +1,245 @@
 """
 reports/report_generator.py
-Converts scan results and red-team findings into readable Markdown reports.
+Converts scan results into professional PDF security reports.
+Pipeline: Markdown content → HTML (via markdown2) → PDF (via xhtml2pdf).
 """
 import os
 import re
+import io
 import datetime
+import markdown2
+from xhtml2pdf import pisa
 from config import REPORT_DIR
+
+
+# ── PDF styling ───────────────────────────────────────────────────────────────
+
+_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page {{ margin: 20mm 16mm; }}
+  body {{ font-family: Helvetica, Arial, sans-serif; font-size: 10pt;
+         color: #1a1a1a; margin: 0; padding: 0; line-height: 1.45; }}
+  /* ── Cover header ─────────────────────────────────────────────────────── */
+  .rpt-header {{ background: #1a1a1a; color: white; padding: 14px 18px 12px 18px;
+                 margin-bottom: 20px; }}
+  .rpt-title  {{ color: #e74c3c; font-size: 22pt; font-weight: bold;
+                 margin: 0 0 3px 0; }}
+  .rpt-sub    {{ color: #aaaaaa; font-size: 8.5pt; margin: 0; }}
+  /* ── Headings ─────────────────────────────────────────────────────────── */
+  h1 {{ color: #c0392b; font-size: 16pt; border-bottom: 2px solid #c0392b;
+        padding-bottom: 4px; margin-top: 20px; margin-bottom: 8px; }}
+  h2 {{ color: #c0392b; font-size: 12.5pt; border-bottom: 1px solid #dddddd;
+        padding-bottom: 3px; margin-top: 16px; margin-bottom: 6px; }}
+  h3 {{ color: #333333; font-size: 11pt; margin-top: 13px; margin-bottom: 4px; }}
+  h4 {{ color: #555555; font-size: 10pt; margin-top: 10px; margin-bottom: 3px; }}
+  /* ── Tables ───────────────────────────────────────────────────────────── */
+  table {{ width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }}
+  th {{ background-color: #c0392b; color: white; padding: 5px 8px;
+        text-align: left; font-weight: bold; }}
+  td {{ padding: 4px 8px; border-bottom: 1px solid #e5e5e5;
+        vertical-align: top; word-wrap: break-word; }}
+  tr.even td {{ background-color: #f8f8f8; }}
+  /* ── Code ─────────────────────────────────────────────────────────────── */
+  code {{ background-color: #f0f0f0; padding: 1px 3px; font-size: 8.5pt;
+          font-family: Courier New, Courier, monospace; }}
+  pre  {{ background-color: #f0f0f0; padding: 8px 10px; font-size: 8pt;
+          font-family: Courier New, Courier, monospace; white-space: pre-wrap;
+          word-wrap: break-word; border-left: 3px solid #c0392b; margin: 6px 0; }}
+  /* ── Blockquote ───────────────────────────────────────────────────────── */
+  blockquote {{ border-left: 4px solid #c0392b; margin: 6px 0;
+                padding: 5px 12px; background-color: #fdf2f2; font-size: 9.5pt; }}
+  /* ── Links ────────────────────────────────────────────────────────────── */
+  a {{ color: #c0392b; text-decoration: none; word-wrap: break-word; }}
+  /* ── Misc ─────────────────────────────────────────────────────────────── */
+  p  {{ margin: 4px 0 7px 0; }}
+  li {{ margin-bottom: 2px; }}
+  hr {{ border: none; border-top: 1px solid #dddddd; margin: 12px 0; }}
+</style>
+</head>
+<body>
+<div class="rpt-header">
+  <div class="rpt-title">FENRIR</div>
+  <div class="rpt-sub">Flexible Engine for Network Reconnaissance &amp; Intelligent Red-teaming</div>
+</div>
+{body}
+</body>
+</html>"""
+
+# ── Two-step emoji replacement ────────────────────────────────────────────────
+#
+# Problem: inserting HTML tags (<b class="...">) into Markdown source breaks
+# markdown2's inline parser when the tag sits inside **bold** markers, producing
+# malformed HTML and xhtml2pdf rendering artefacts (black boxes, squished text).
+#
+# Fix: replace emoji with plain-text tokens FIRST (step 1, before markdown2),
+# then swap tokens for coloured HTML badges AFTER markdown→HTML conversion
+# (step 2), so the markdown parser never sees raw HTML tags in table cells.
+
+# Step 1 -- emoji -> plain ASCII tokens (markdown-safe, no HTML)
+# All keys use \uXXXX escapes to avoid quote-normalisation issues.
+_EMOJI_TOKENS = {
+    '\U0001f534': 'FENRIR_CRIT',   # red circle
+    '\U0001f7e0': 'FENRIR_HIGH',   # orange circle
+    '\U0001f7e1': 'FENRIR_MED',    # yellow circle
+    '\U0001f535': 'FENRIR_LOW',    # blue circle
+    '\U0001f7e2': 'FENRIR_OK',     # green circle
+    '\u2705': 'FENRIR_YES',        # check mark button
+    '\u274c': 'FENRIR_NO',         # cross mark
+    '\u26a0\ufe0f': 'FENRIR_WARN', # warning sign + VS16
+    '\u26a0': 'FENRIR_WARN',       # warning sign
+    '\U0001f43a': 'FENRIR',        # wolf
+    '\U0001f527': '',              # wrench
+    '\u2713': 'OK',                # check mark
+    '\u2717': 'FAIL',              # ballot x
+    '\u2192': '->',               # rightwards arrow
+    '\u2190': '<-',               # leftwards arrow
+    '\u2014': '--',               # em dash
+    '\u2013': '-',                # en dash
+    '\u201c': '"',               # left double quotation mark
+    '\u201d': '"',               # right double quotation mark
+    '\u2018': chr(39),              # left single quotation mark
+    '\u2019': chr(39),              # right single quotation mark
+    '\u2026': '...',             # horizontal ellipsis
+}
+
+# Step 2 -- tokens -> coloured HTML badges (applied after markdown->HTML)
+_TOKEN_HTML = {
+    'FENRIR_CRIT': '<b style="color:#c0392b">[CRIT]</b>',
+    'FENRIR_HIGH': '<b style="color:#e67e22">[HIGH]</b>',
+    'FENRIR_MED':  '<b style="color:#d4a017">[MED]</b>',
+    'FENRIR_LOW':  '<b style="color:#2980b9">[LOW]</b>',
+    'FENRIR_OK':   '<b style="color:#27ae60">[OK]</b>',
+    'FENRIR_YES':  '<b style="color:#27ae60">[YES]</b>',
+    'FENRIR_NO':   '<b style="color:#c0392b">[NO]</b>',
+    'FENRIR_WARN': '<b style="color:#e67e22">[!]</b>',
+}
+
+
+def _replace_emoji(text: str) -> str:
+    """
+    Step 1: replace emoji/special chars with plain-text tokens.
+    Any char outside Latin Extended-B that has no token is replaced with '?'
+    so xhtml2pdf never encounters an unknown glyph.
+    """
+    for emoji, token in _EMOJI_TOKENS.items():
+        text = text.replace(emoji, token)
+    result = []
+    for ch in text:
+        cp = ord(ch)
+        if cp <= 0x024F:                    # Basic Latin + Latin Extended A/B
+            result.append(ch)
+        elif 0x0370 <= cp <= 0x03FF:        # Greek (appears in some CVE text)
+            result.append(ch)
+        else:
+            result.append("?")
+    return "".join(result)
+
+
+def _md_to_pdf(md_content: str, pdf_path: str) -> bool:
+    """
+    Convert Markdown string to a styled PDF file.
+
+    Pipeline:
+      1. _replace_emoji()  — emoji → plain tokens  (before markdown parsing)
+      2. strip details/summary tags
+      3. markdown2          — Markdown → HTML
+      4. _TOKEN_HTML swap   — tokens → coloured badges (after markdown parsing)
+      5. _stripe_tables()  — alternating row colours
+      6. xhtml2pdf          — HTML → PDF
+    """
+    # 1. Emoji → plain-text tokens
+    md_content = _replace_emoji(md_content)
+
+    # 2. Strip non-interactive HTML wrappers
+    md_clean = re.sub(r"<details[^>]*>", "", md_content)
+    md_clean = re.sub(r"</details>", "", md_clean)
+    md_clean = re.sub(r"<summary[^>]*>.*?</summary>", "\n**Details:**\n",
+                      md_clean, flags=re.DOTALL)
+
+    # 3. Markdown → HTML
+    html_body = markdown2.markdown(
+        md_clean,
+        extras=["tables", "fenced-code-blocks", "strike", "header-ids"],
+    )
+
+    # 4. Tokens → coloured HTML badges (safe: markdown already parsed)
+    for token, badge in _TOKEN_HTML.items():
+        html_body = html_body.replace(token, badge)
+
+    # 5. Force 38/62% column widths on 2-column summary tables
+    html_body = _fix_table_widths(html_body)
+
+    # 6. Alternate table row colours (nth-child not supported by xhtml2pdf)
+    html_body = _stripe_tables(html_body)
+
+    html = _HTML_TEMPLATE.format(body=html_body)
+
+    # 6. Render to PDF
+    try:
+        with open(pdf_path, "wb") as f:
+            result = pisa.CreatePDF(io.StringIO(html), dest=f, encoding="utf-8")
+        return not result.err
+    except Exception as exc:
+        from logger import warn
+        warn(f"PDF generation failed: {exc}")
+        return False
+
+
+def _stripe_tables(html: str) -> str:
+    """Add alternating 'even' class to every second <tr> for PDF table styling."""
+    lines = html.split("\n")
+    out = []
+    tr_count = 0
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("<tr"):
+            tr_count += 1
+            if tr_count % 2 == 0:
+                line = line.replace("<tr>", '<tr class="even">', 1)
+        if stripped.startswith("</table"):
+            tr_count = 0
+        out.append(line)
+    return "\n".join(out)
+
+
+def _fix_table_widths(html: str) -> str:
+    """
+    For 2-column summary tables: inject width="38%" / width="62%" on every
+    cell so xhtml2pdf never under-sizes the label column.
+    Tables with 3+ columns are left untouched (auto-sizing works fine there).
+    """
+    def fix_table(m: re.Match) -> str:
+        table_html = m.group(0)
+        first_tr = re.search(r'<tr[^>]*>.*?</tr>', table_html, re.DOTALL)
+        if not first_tr:
+            return table_html
+        col_count = len(re.findall(r'<t[dh][^>]*>', first_tr.group(0)))
+        if col_count != 2:
+            return table_html
+
+        widths = ['38%', '62%']
+
+        def fix_row(row_m: re.Match) -> str:
+            row = row_m.group(0)
+            idx = [0]
+
+            def fix_cell(cell_m: re.Match) -> str:
+                tag = cell_m.group(0)
+                if idx[0] < 2:
+                    w = widths[idx[0]]
+                    idx[0] += 1
+                    return tag[:-1] + f' width="{w}">'
+                return tag
+
+            return re.sub(r'<(td|th)[^>]*>', fix_cell, row)
+
+        return re.sub(r'<tr[^>]*>.*?</tr>', fix_row, table_html, flags=re.DOTALL)
+
+    return re.sub(r'<table[^>]*>.*?</table>', fix_table, html, flags=re.DOTALL)
 
 
 def _ensure_dir():
@@ -30,7 +264,7 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
     ts       = _timestamp()
     target   = nmap_result.get("target", "unknown")
     raw_out  = nmap_result.get("output", "")
-    filename = f"{REPORT_DIR}/nmap_{target.replace('.', '_')}_{ts}.md"
+    filename = f"{REPORT_DIR}/nmap_{target.replace('.', '_')}_{ts}.pdf"
 
     cve_results: list = nmap_result.get("_cve_results", [])
 
@@ -127,7 +361,7 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
             ]
             for cve in svc_result.cves:
                 cvss      = getattr(cve, "cvss_score", "N/A")
-                severity  = getattr(cve, "severity",   "N/A")
+                severity  = getattr(cve, "cvss_severity", "N/A")
                 published = getattr(cve, "published",  "N/A")
                 desc      = getattr(cve, "description", "")
                 short_desc = (desc[:120] + "…") if len(desc) > 120 else desc
@@ -160,9 +394,7 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
     if nmap_result.get("error"):
         lines += ["", "## Errors", "", "```", nmap_result["error"].strip(), "```"]
 
-    content = "\n".join(lines)
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
+    _md_to_pdf("\n".join(lines), filename)
 
     return filename
 
@@ -179,7 +411,7 @@ def generate_redteam_report(report) -> str:
 
     _ensure_dir()
     ts = _timestamp()
-    filename = f"{REPORT_DIR}/redteam_{report.target_name}_{ts}.md"
+    filename = f"{REPORT_DIR}/redteam_{report.target_name}_{ts}.pdf"
 
     risk = _risk_label(report.success_rate)
     lines = [
@@ -231,10 +463,7 @@ def generate_redteam_report(report) -> str:
         *_recommendations(report),
     ]
 
-    content = "\n".join(lines)
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
-
+    _md_to_pdf("\n".join(lines), filename)
     return filename
 
 
@@ -397,7 +626,7 @@ def _top_severity(cves: list) -> str:
     order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "None": 0, "N/A": 0}
     best  = "None"
     for cve in cves:
-        sev = getattr(cve, "severity", "None") or "None"
+        sev = getattr(cve, "cvss_severity", "None") or "None"
         if order.get(sev, 0) > order.get(best, 0):
             best = sev
     return best
@@ -421,7 +650,7 @@ def _nmap_risk(nmap_result: dict, cve_results: list) -> tuple[str, str]:
         return "🟢 LOW", "No CVEs found"
 
     all_cves  = [c for r in cve_results for c in r.cves]
-    severities = [getattr(c, "severity", "None") or "None" for c in all_cves]
+    severities = [getattr(c, "cvss_severity", "None") or "None" for c in all_cves]
 
     if "Critical" in severities:
         return "🔴 CRITICAL", f"{severities.count('Critical')} critical CVE(s) detected"
@@ -562,7 +791,7 @@ def generate_gobuster_report(result) -> str:
     _ensure_dir()
     ts       = _timestamp()
     safe     = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
-    filename = f"{REPORT_DIR}/gobuster_{safe}_{ts}.md"
+    filename = f"{REPORT_DIR}/gobuster_{safe}_{ts}.pdf"
 
     total     = len(result.findings)
     found     = len(result.found_paths)
@@ -662,8 +891,415 @@ def generate_gobuster_report(result) -> str:
     if getattr(result, "error", None):
         lines += ["## Errors", "", "```", result.error.strip(), "```"]
 
-    content = "\n".join(lines)
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
 
+
+# ── Full Scan Report ──────────────────────────────────────────────────────────
+
+_SEVERITY_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0}
+
+
+class _Finding:
+    __slots__ = ("severity", "cvss", "category", "title", "context", "action")
+
+    def __init__(self, severity, cvss, category, title, context, action):
+        self.severity = severity
+        self.cvss     = cvss
+        self.category = category
+        self.title    = title
+        self.context  = context
+        self.action   = action
+
+
+def _collect_findings(full_result: dict) -> list[_Finding]:
+    """Aggregate findings from all scan modules into a unified, sortable list."""
+    findings: list[_Finding] = []
+    ports     = _parse_ports(full_result.get("nmap_result", {}).get("output", ""))
+
+    # ── CVEs ──────────────────────────────────────────────────────────────────
+    for svc in full_result.get("cve_results", []):
+        for cve in svc.cves:
+            sev = cve.cvss_severity or "Unknown"
+            findings.append(_Finding(
+                severity=sev,
+                cvss=cve.cvss_score,
+                category="CVE",
+                title=f"{cve.cve_id} — {cve.description[:80]}",
+                context=f"Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}".strip(),
+                action=f"Patch / update {svc.product}. Details: {cve.url}",
+            ))
+
+    # ── Port risks ────────────────────────────────────────────────────────────
+    for p in ports:
+        if p["state"] != "open":
+            continue
+        icon, note = _port_severity(p["port"])
+        sev = {"🔴": "Critical", "🟠": "High", "🟡": "Medium"}.get(icon)
+        if sev:
+            findings.append(_Finding(
+                severity=sev,
+                cvss=0.0,
+                category="Port",
+                title=f"Port {p['port']} ({p['service']}) — {note[:70]}",
+                context=f"{p['service']} {p['version']}".strip(),
+                action=note,
+            ))
+
+    # ── Known-vulnerable versions ─────────────────────────────────────────────
+    for p in ports:
+        warn_str = _check_vulnerable_version(p["service"], p["version"])
+        if warn_str:
+            sev = "Critical" if ("RCE" in warn_str or "9.8" in warn_str or "Backdoor" in warn_str) else "High"
+            findings.append(_Finding(
+                severity=sev,
+                cvss=0.0,
+                category="Version",
+                title=warn_str[:100],
+                context=f"Port {p['port']} — {p['service']} {p['version']}",
+                action=f"Update {p['service']} to the latest stable release immediately.",
+            ))
+
+    # ── SSL/TLS ───────────────────────────────────────────────────────────────
+    for ssl_res in full_result.get("ssl_results", []):
+        for f in ssl_res.findings:
+            if f.severity == "Info":
+                continue
+            findings.append(_Finding(
+                severity=f.severity,
+                cvss=0.0,
+                category="SSL/TLS",
+                title=f.title,
+                context=f"Port {ssl_res.port}/tcp ({ssl_res.target})",
+                action=f.detail[:150],
+            ))
+
+    # ── HTTP Security Headers ─────────────────────────────────────────────────
+    for http_res in full_result.get("http_results", []):
+        for hf in http_res.missing_headers:
+            findings.append(_Finding(
+                severity=hf.severity,
+                cvss=0.0,
+                category="HTTP Header",
+                title=f"Missing security header: {hf.name}",
+                context=http_res.url,
+                action=hf.recommendation,
+            ))
+        for header_name, value in http_res.info_disclosure:
+            findings.append(_Finding(
+                severity="Low",
+                cvss=0.0,
+                category="Info Disclosure",
+                title=f"Server info exposed: {header_name}: {value[:50]}",
+                context=http_res.url,
+                action=f"Remove or obscure the '{header_name}' response header to reduce fingerprinting.",
+            ))
+
+    # ── Gobuster high-interest paths ──────────────────────────────────────────
+    gobuster = full_result.get("gobuster_result")
+    if gobuster and getattr(gobuster, "interesting_paths", None):
+        for f in gobuster.interesting_paths:
+            if _path_severity(f.path):
+                findings.append(_Finding(
+                    severity="High",
+                    cvss=0.0,
+                    category="Directory",
+                    title=f"Sensitive path accessible: {f.path}",
+                    context=gobuster.target,
+                    action=f"Restrict access to '{f.path}' — may expose admin interface, "
+                           "credentials, config files, or source control data.",
+                ))
+
+    findings.sort(key=lambda x: (_SEVERITY_ORDER.get(x.severity, 0), x.cvss), reverse=True)
+    return findings
+
+
+def _overall_risk_from_findings(findings: list[_Finding]) -> tuple[str, str]:
+    if not findings:
+        return "🟢 LOW", "No significant findings detected"
+    top = findings[0].severity
+    count = sum(1 for f in findings if f.severity == top)
+    labels = {
+        "Critical": ("🔴 CRITICAL", f"{count} critical finding(s) require immediate action"),
+        "High":     ("🟠 HIGH",     f"{count} high-severity finding(s) detected"),
+        "Medium":   ("🟡 MEDIUM",   f"{count} medium-severity finding(s) detected"),
+        "Low":      ("🔵 LOW",      f"{count} low-severity finding(s) — monitor and plan remediation"),
+    }
+    return labels.get(top, ("🟢 LOW", "No significant findings"))
+
+
+def _full_scan_executive_summary(full_result: dict, findings: list[_Finding]) -> list[str]:
+    target       = full_result.get("target", "unknown")
+    nmap_result  = full_result.get("nmap_result", {})
+    ports        = _parse_ports(nmap_result.get("output", ""))
+    open_ports   = [p for p in ports if p["state"] == "open"]
+    cve_results  = full_result.get("cve_results", [])
+    ssl_results  = full_result.get("ssl_results", [])
+    http_results = full_result.get("http_results", [])
+
+    total_cves  = sum(len(r.cves) for r in cve_results)
+    crit_cves   = sum(1 for r in cve_results for c in r.cves if c.cvss_severity == "Critical")
+    high_cves   = sum(1 for r in cve_results for c in r.cves if c.cvss_severity == "High")
+    ssl_issues  = sum(1 for r in ssl_results for f in r.findings if f.severity not in ("Info",))
+    miss_hdrs   = sum(1 for r in http_results for f in r.missing_headers)
+
+    risk_label, risk_reason = _overall_risk_from_findings(findings)
+
+    lines = [
+        "## Executive Summary",
+        "",
+        f"A comprehensive security assessment was performed against **`{target}`**. "
+        f"{len(open_ports)} open port(s) were identified, hosting {len(cve_results)} versioned service(s).",
+        "",
+    ]
+
+    if findings:
+        crit_count = sum(1 for f in findings if f.severity == "Critical")
+        high_count = sum(1 for f in findings if f.severity == "High")
+        med_count  = sum(1 for f in findings if f.severity == "Medium")
+
+        lines.append(
+            f"**{len(findings)} security findings** were identified in total: "
+            f"{crit_count} Critical, {high_count} High, {med_count} Medium."
+        )
+        lines.append("")
+
+        if crit_cves or high_cves:
+            lines.append(
+                f"The CVE analysis found **{total_cves} vulnerabilities** across the detected services, "
+                f"including {crit_cves} Critical and {high_cves} High severity entries. "
+                "Affected services should be patched or updated as a priority."
+            )
+            lines.append("")
+
+        if ssl_issues:
+            lines.append(
+                f"**{ssl_issues} SSL/TLS issue(s)** were found. Weak TLS configurations expose "
+                "encrypted traffic to interception and downgrade attacks."
+            )
+            lines.append("")
+
+        if miss_hdrs:
+            lines.append(
+                f"**{miss_hdrs} HTTP security header(s)** are missing. "
+                "Security headers are a low-effort, high-impact defense against XSS, "
+                "clickjacking, and MIME-type attacks."
+            )
+            lines.append("")
+    else:
+        lines += [
+            "No significant security findings were detected during this assessment. "
+            "The target appears to be well-hardened. Continue regular scanning to monitor for changes.",
+            "",
+        ]
+
+    lines += [
+        f"**Overall Risk Level: {risk_label}**  —  {risk_reason}.",
+        "",
+    ]
+    return lines
+
+
+def _priority_fix_list(findings: list[_Finding]) -> list[str]:
+    if not findings:
+        return []
+
+    lines = ["## Priority Fix List", ""]
+    groups = {
+        "Critical": ("🔴 Immediate Action Required",  "Fix within 24–48 hours"),
+        "High":     ("🟠 Fix Within 7 Days",          "Address before next business week"),
+        "Medium":   ("🟡 Fix Within 30 Days",         "Schedule in the next sprint/cycle"),
+        "Low":      ("🔵 Recommendations",            "Apply when resources allow"),
+    }
+
+    for sev, (label, subtitle) in groups.items():
+        group = [f for f in findings if f.severity == sev]
+        if not group:
+            continue
+        lines += [f"### {label}", f"_{subtitle}_", ""]
+        lines += ["| # | Category | Finding | Context | Action |",
+                  "|---|---|---|---|---|"]
+        for i, f in enumerate(group, 1):
+            title_safe = f.title.replace("|", "\\|")
+            ctx_safe   = f.context.replace("|", "\\|")
+            action_safe = f.action[:90].replace("|", "\\|") + ("…" if len(f.action) > 90 else "")
+            lines.append(f"| {i} | {f.category} | {title_safe} | {ctx_safe} | {action_safe} |")
+        lines.append("")
+
+    return lines
+
+
+def generate_full_scan_report(full_result: dict) -> str:
+    """
+    Generate a comprehensive Markdown security report from a Full Scan result dict.
+
+    Expected keys in full_result:
+        target, nmap_result, cve_results, ssl_results, http_results, gobuster_result
+
+    Returns the file path of the saved .md report.
+    """
+    _ensure_dir()
+    ts     = _timestamp()
+    target = full_result.get("target", "unknown")
+    safe   = target.replace(".", "_").replace(":", "_")
+    filename = f"{REPORT_DIR}/fullscan_{safe}_{ts}.pdf"
+
+    nmap_result  = full_result.get("nmap_result", {})
+    cve_results  = full_result.get("cve_results", [])
+    ssl_results  = full_result.get("ssl_results", [])
+    http_results = full_result.get("http_results", [])
+    gobuster     = full_result.get("gobuster_result")
+
+    findings   = _collect_findings(full_result)
+    risk_label, risk_reason = _overall_risk_from_findings(findings)
+
+    raw_out  = nmap_result.get("output", "")
+    ports    = _parse_ports(raw_out)
+    host_info = _parse_host_info(raw_out)
+
+    # ── Report header ─────────────────────────────────────────────────────────
+    lines = [
+        f"# FENRIR Security Report — `{target}`",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Target**        | `{target}` |",
+        f"| **Scan Date**      | {ts} |",
+        f"| **Overall Risk**   | {risk_label} |",
+        f"| **Total Findings** | {len(findings)} |",
+        f"| **Open Ports**     | {sum(1 for p in ports if p['state'] == 'open')} |",
+        f"| **CVEs Found**     | {sum(len(r.cves) for r in cve_results)} |",
+        "",
+    ]
+
+    # ── Executive Summary ─────────────────────────────────────────────────────
+    lines += _full_scan_executive_summary(full_result, findings)
+
+    # ── Priority Fix List ─────────────────────────────────────────────────────
+    lines += _priority_fix_list(findings)
+
+    # ── Detailed Findings: Nmap ───────────────────────────────────────────────
+    lines += ["---", "", "## Detailed Findings", "", "### Port Scan (Nmap)", ""]
+    if host_info:
+        lines += ["| Field | Value |", "|---|---|"]
+        for k, v in host_info.items():
+            lines.append(f"| **{k}** | {v} |")
+        lines.append("")
+
+    if ports:
+        lines += [
+            "| Port | State | Service | Version | Risk | Note |",
+            "|---|---|---|---|---|---|",
+        ]
+        for p in ports:
+            state_icon      = "🟢" if p["state"] == "open" else "🟡"
+            sev_icon, note  = _port_severity(p["port"])
+            ver_warn        = _check_vulnerable_version(p["service"], p["version"])
+            note_col        = ver_warn or note or "—"
+            lines.append(
+                f"| `{p['port']}` | {state_icon} {p['state']} "
+                f"| {p['service']} | {p['version'] or '—'} "
+                f"| {sev_icon or '—'} | {note_col} |"
+            )
+        lines.append("")
+
+    # ── Detailed Findings: CVE ────────────────────────────────────────────────
+    if cve_results:
+        lines += ["### CVE Analysis", ""]
+        for svc in cve_results:
+            if not svc.cves:
+                continue
+            top_sev  = _top_severity(svc.cves)
+            sev_icon = _severity_icon(top_sev)
+            lines += [
+                f"#### {sev_icon} Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}",
+                "",
+                "| CVE ID | CVSS | Severity | Published | Description |",
+                "|---|---|---|---|---|",
+            ]
+            for cve in svc.cves:
+                desc = (cve.description[:100] + "…") if len(cve.description) > 100 else cve.description
+                lines.append(
+                    f"| [`{cve.cve_id}`]({cve.url}) | {cve.cvss_score} "
+                    f"| {cve.cvss_severity} | {cve.published} | {desc} |"
+                )
+            lines.append("")
+
+    # ── Detailed Findings: SSL/TLS ────────────────────────────────────────────
+    if ssl_results:
+        lines += ["### SSL/TLS Analysis", ""]
+        for r in ssl_results:
+            if not r.reachable:
+                lines += [f"**Port {r.port}/tcp** — Could not connect: {r.error}", ""]
+                continue
+            non_info = [f for f in r.findings if f.severity != "Info"]
+            lines += [
+                f"**Port {r.port}/tcp** — {r.negotiated_version}  "
+                f"Cipher: `{r.cipher_name}`",
+                f"Certificate: {r.cert_subject} (issued by {r.cert_issuer})",
+                f"Expiry: {r.cert_expiry} ({r.days_until_expiry} days remaining)",
+                "",
+            ]
+            if non_info:
+                lines += ["| Severity | Finding | Detail |", "|---|---|---|"]
+                for f in non_info:
+                    lines.append(f"| {f.severity} | {f.title} | {f.detail[:120]} |")
+                lines.append("")
+
+    # ── Detailed Findings: HTTP Headers ──────────────────────────────────────
+    if http_results:
+        lines += ["### HTTP Security Headers", ""]
+        for r in http_results:
+            if r.error:
+                lines += [f"**{r.url}** — Error: {r.error}", ""]
+                continue
+            lines += [
+                f"**{r.url}** (HTTP {r.status_code})",
+                "",
+                "| Header | Present | Severity | Value / Recommendation |",
+                "|---|---|---|---|",
+            ]
+            for f in r.findings:
+                status = "✅ Yes" if f.present else "❌ No"
+                val    = f.value[:60] if f.present else f.recommendation[:70]
+                lines.append(f"| `{f.name}` | {status} | {f.severity if not f.present else '—'} | {val} |")
+            if r.info_disclosure:
+                lines.append("")
+                lines.append("**Information Disclosure Headers:**")
+                for h, v in r.info_disclosure:
+                    lines.append(f"- `{h}: {v}` — remove or obscure this header")
+            lines.append("")
+
+    # ── Detailed Findings: Gobuster ───────────────────────────────────────────
+    if gobuster and getattr(gobuster, "findings", None):
+        lines += ["### Directory Discovery (Gobuster)", ""]
+        total = len(gobuster.findings)
+        interesting = getattr(gobuster, "interesting_paths", [])
+        lines.append(f"{total} path(s) found. {len(interesting)} accessible/redirected.")
+        lines.append("")
+        if interesting:
+            lines += ["| Path | Status | Size | Note |", "|---|---|---|---|"]
+            for f in interesting:
+                sev  = _path_severity(f.path)
+                note = (f"← {sev}" if sev else "") + ("  " + _size_note(f.size) if _size_note(f.size) else "")
+                lines.append(f"| `{f.path}` | {f.status} | {f.size}B | {note or '—'} |")
+            lines.append("")
+
+    # ── Raw Nmap output ───────────────────────────────────────────────────────
+    if raw_out.strip():
+        lines += [
+            "---",
+            "",
+            "## Raw Nmap Output",
+            "",
+            "<details><summary>Show raw output</summary>",
+            "",
+            "```",
+            raw_out.strip(),
+            "```",
+            "",
+            "</details>",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
     return filename

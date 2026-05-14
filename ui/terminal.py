@@ -1,15 +1,6 @@
 """
 ui/terminal.py
 Rich-powered terminal UI for FENRIR.
-FENRIR — Flexible Engine for Network Reconnaissance & Intelligent Red-teaming
-
-Replaces plain print() / input() with:
-  - Styled header banner
-  - Interactive main menu with keyboard selection
-  - Live progress spinners during scans
-  - Colour-coded result panels
-  - Formatted CVE and red-team result tables
-  - Chat interface with message history display
 """
 
 from rich.console import Console
@@ -21,7 +12,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeEl
 from rich.columns import Columns
 from rich.rule import Rule
 from rich.syntax import Syntax
-from rich.markup import escape
 from rich import box
 import time
 
@@ -41,7 +31,7 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v1.0.5", style="bold white")
+    banner.append("  v1.0.6", style="bold white")
 
     console.print(Panel(
         banner,
@@ -56,8 +46,8 @@ def print_banner():
 # ── Main menu ─────────────────────────────────────────────────────────────────
 
 MENU_OPTIONS = [
-    ("1", "chat",      "AI Chat",        "Interactive red-team conversation with the AI agent"),
-    ("2", "nmap",      "Nmap Scan",      "Scan a target for open ports and services"),
+    ("1", "fullscan",  "Full Scan",      "Complete assessment: Nmap + CVE + SSL + HTTP Headers + Dirs"),
+    ("2", "nmap",      "Nmap Scan",      "Scan a target for open ports, services and CVEs"),
     ("3", "gobuster",  "Dir Bruteforce", "Find hidden paths on a web server"),
     ("4", "redteam",   "AI Red-Team",    "Fire adversarial prompts against an AI endpoint"),
     ("5", "quit",      "Exit",           "Quit the program"),
@@ -317,6 +307,117 @@ def print_redteam_results(report):
     console.print(table)
 
 
+def confirm_gobuster() -> bool:
+    """Ask whether to include a Gobuster directory scan in the full scan."""
+    return Confirm.ask(
+        "  [dim]Include directory scan (Gobuster)?[/dim] [dim](slower, but finds hidden paths)[/dim]",
+        default=False,
+    )
+
+
+def print_scan_step(step: int, total: int, label: str):
+    """Print a numbered step header during Full Scan."""
+    console.print()
+    console.print(f"  [bold red][{step}/{total}][/bold red]  [bold white]{label}[/bold white]")
+
+
+def print_ssl_results(ssl_results: list):
+    """Display SSL/TLS analysis results."""
+    if not ssl_results:
+        return
+    console.print()
+    console.print(Rule("[bold]SSL/TLS Analysis[/bold]", style="red"))
+
+    for r in ssl_results:
+        non_info = [f for f in r.findings if f.severity != "Info"]
+        border = "red" if r.has_critical else ("yellow" if r.has_high else "dim")
+        icon   = "🔴" if r.has_critical else ("🟠" if r.has_high else "🟢")
+        title  = f"{icon}  Port [bold]{r.port}/tcp[/bold] — {r.negotiated_version or 'TLS'}"
+
+        if not r.reachable:
+            console.print(Panel(f"[dim]Could not connect: {r.error}[/dim]", title=title, border_style="dim"))
+            continue
+
+        if not non_info:
+            console.print(Panel("[dim]No SSL/TLS issues found.[/dim]", title=title, border_style="dim"))
+            continue
+
+        table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+        table.add_column("Sev",     width=10)
+        table.add_column("Finding", style="bold white", ratio=1)
+        table.add_column("Detail",  style="dim",        ratio=2)
+
+        for f in non_info:
+            sev_color = {"Critical": "bold red", "High": "bold yellow",
+                         "Medium": "yellow", "Low": "green"}.get(f.severity, "white")
+            table.add_row(
+                Text(f.severity, style=sev_color),
+                f.title,
+                f.detail[:100] + ("…" if len(f.detail) > 100 else ""),
+            )
+
+        meta = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), show_edge=False)
+        meta.add_column("k", style="dim", width=20)
+        meta.add_column("v", style="white")
+        if r.cert_subject:
+            meta.add_row("Subject", r.cert_subject)
+        if r.cert_issuer:
+            meta.add_row("Issuer",  r.cert_issuer)
+        if r.cert_expiry:
+            days_str = f"{r.days_until_expiry}d remaining" if not r.cert_expired else "EXPIRED"
+            meta.add_row("Expiry",  f"{r.cert_expiry}  ({days_str})")
+        tls_support = "  ".join(
+            v for v, enabled in [("TLS1.0", r.tls10_enabled), ("TLS1.1", r.tls11_enabled),
+                                  ("TLS1.2", r.tls12_enabled), ("TLS1.3", r.tls13_enabled)]
+            if enabled
+        )
+        if tls_support:
+            meta.add_row("Supported", tls_support)
+
+        from rich.columns import Columns
+        console.print(Panel(Columns([meta, table]), title=title, border_style=border))
+
+
+def print_http_header_results(http_results: list):
+    """Display HTTP security header check results."""
+    if not http_results:
+        return
+    console.print()
+    console.print(Rule("[bold]HTTP Security Headers[/bold]", style="red"))
+
+    for r in http_results:
+        if r.error:
+            console.print(Panel(f"[dim]Error: {r.error}[/dim]", title=f"  {r.url}", border_style="dim"))
+            continue
+
+        missing = r.missing_headers
+        border = "yellow" if r.has_high_issues else "dim"
+        icon   = "🟠" if r.has_high_issues else "🟡" if missing else "🟢"
+        title  = f"{icon}  {r.url}  [dim](HTTP {r.status_code})[/dim]"
+
+        table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+        table.add_column("",        width=3,  justify="center")
+        table.add_column("Header",  style="white", ratio=1)
+        table.add_column("Sev",     width=8)
+        table.add_column("Status / Value", style="dim", ratio=2)
+
+        for f in r.findings:
+            if f.present:
+                val = f.value[:60] + ("…" if len(f.value) > 60 else "")
+                table.add_row("✅", f.name, "", val)
+            else:
+                sev_color = {"High": "bold yellow", "Medium": "yellow", "Low": "dim"}.get(f.severity, "dim")
+                table.add_row("❌", f.name, Text(f.severity, style=sev_color), f.recommendation[:60])
+
+        lines = [table]
+        if r.info_disclosure:
+            disc = "  ".join(f"[bold]{h}[/bold]: {v[:30]}" for h, v in r.info_disclosure)
+            lines.append(Text(f"\n  Info disclosure: {disc}", style="dim yellow"))
+
+        from rich.console import Group
+        console.print(Panel(Group(*lines), title=title, border_style=border))
+
+
 def print_report_saved(path: str):
     console.print()
     console.print(Panel(
@@ -342,35 +443,3 @@ def print_info(msg: str):
     console.print(f"  [dim]·[/dim]  [dim]{msg}[/dim]")
 
 
-# ── Chat UI ───────────────────────────────────────────────────────────────────
-
-def print_chat_header():
-    console.print(Panel(
-        "[bold]FENRIR — AI Security Chat[/bold]\n[dim]Type [bold white]exit[/bold white] to return to menu[/dim]",
-        border_style="dim red",
-        padding=(0, 2),
-    ))
-    console.print()
-
-
-def print_user_message(msg: str):
-    console.print(Panel(
-        escape(msg),
-        title="[bold white]You[/bold white]",
-        border_style="dim white",
-        padding=(0, 2),
-    ))
-
-
-def print_ai_message(msg: str):
-    console.print(Panel(
-        escape(msg),
-        title="[bold red]AI Agent[/bold red]",
-        border_style="dim red",
-        padding=(0, 2),
-    ))
-    console.print()
-
-
-def prompt_chat_input() -> str:
-    return Prompt.ask("[bold white]You[/bold white]").strip()

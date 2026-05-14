@@ -2,37 +2,51 @@
 tools/cve_lookup.py
 Queries the NVD (National Vulnerability Database) API for CVEs
 based on software names and versions found in an nmap scan.
+
+Lookup strategy (per service):
+  1. CPE dictionary lookup  → get vendor:product CPE for exact matching
+  2. CVE query via cpeName  → returns CVEs with version-range metadata
+  3. Version-range filter   → discard CVEs that don't affect the scanned version
+  4. Keyword fallback       → used when CPE lookup yields nothing
 """
 
 import re
 import time
 import requests
 from dataclasses import dataclass, field
+from typing import Optional
 from logger import log, warn
 
+try:
+    from packaging.version import Version as PkgVersion, InvalidVersion
+    _HAS_PACKAGING = True
+except ImportError:
+    _HAS_PACKAGING = False
 
-NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+NVD_CVE_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+NVD_CPE_API_URL = "https://services.nvd.nist.gov/rest/json/cpes/2.0"
 REQUEST_DELAY = 6.5   # seconds between requests (safe under the 5/30s limit)
 
 
 @dataclass
 class CVEEntry:
-    cve_id: str           # e.g. CVE-2021-41773
-    description: str      # short English description
-    cvss_score: float     # 0.0 – 10.0
-    cvss_severity: str    # None / Low / Medium / High / Critical
-    cvss_vector: str      # CVSS vector string
-    published: str        # publication date
-    url: str              # link to NVD page
+    cve_id: str
+    description: str
+    cvss_score: float
+    cvss_severity: str
+    cvss_vector: str
+    published: str
+    url: str
 
 
 @dataclass
 class ServiceCVEResult:
     port: int
-    protocol: str         # tcp / udp
-    service: str          # e.g. http
-    product: str          # e.g. Apache httpd
-    version: str          # e.g. 2.4.49
+    protocol: str
+    service: str
+    product: str
+    version: str
     cves: list[CVEEntry] = field(default_factory=list)
 
     @property
@@ -56,26 +70,15 @@ def parse_nmap_services(nmap_output: str) -> list[dict]:
 
     Returns a list of dicts:
       { port, protocol, state, service, product, version }
-
-    Example nmap line:
-      80/tcp   open  http    Apache httpd 2.4.49 ((Unix))
-      22/tcp   open  ssh     OpenSSH 7.4 (protocol 2.0)
     """
     services = []
-
-    # Matches: PORT/PROTO STATE SERVICE PRODUCT VERSION (extra)
     pattern = re.compile(
         r"^(\d+)/(tcp|udp)\s+(open)\s+(\S+)\s+(.*?)$",
         re.MULTILINE,
     )
-
     for match in pattern.finditer(nmap_output):
         port, proto, state, service, rest = match.groups()
-
-        # Split product from version — version usually starts with a digit
-        # e.g. "Apache httpd 2.4.49 ((Unix))" → product="Apache httpd", version="2.4.49"
         product, version = _split_product_version(rest)
-
         if product:
             services.append({
                 "port": int(port),
@@ -85,14 +88,12 @@ def parse_nmap_services(nmap_output: str) -> list[dict]:
                 "product": product.strip(),
                 "version": version.strip(),
             })
-
     return services
 
 
 def _split_product_version(text: str) -> tuple[str, str]:
     """Split 'Apache httpd 2.4.49 ((Unix))' into ('Apache httpd', '2.4.49')."""
-    text = re.sub(r"\(.*?\)", "", text).strip()   # remove parenthetical extras
-    # Find the first version-looking token (starts with digit)
+    text = re.sub(r"\(.*?\)", "", text).strip()
     version_match = re.search(r"\b(\d[\d.]+\w*)\b", text)
     if version_match:
         version = version_match.group(1)
@@ -101,77 +102,189 @@ def _split_product_version(text: str) -> tuple[str, str]:
     return text, ""
 
 
-# ── NVD API client ────────────────────────────────────────────────────────────
+# ── version comparison ────────────────────────────────────────────────────────
 
-def lookup_cves(
-    keyword: str,
-    max_results: int = 5,
-    api_key: str = "",
-) -> list[CVEEntry]:
+def _parse_version(v: str):
+    """Parse version string into a comparable object."""
+    if not v:
+        return None
+    if _HAS_PACKAGING:
+        try:
+            return PkgVersion(v)
+        except InvalidVersion:
+            pass
+    parts = re.findall(r"\d+", v)
+    return tuple(int(p) for p in parts) if parts else None
+
+
+def _version_in_range(version: str, cpe_match: dict) -> bool:
     """
-    Search NVD for CVEs matching *keyword* (e.g. "Apache httpd 2.4.49").
-    Returns up to *max_results* entries sorted by CVSS score descending.
-
-    Args:
-        keyword:     Product name + version string to search.
-        max_results: How many CVEs to return (default 5 per service).
-        api_key:     Optional NVD API key for higher rate limits.
+    Return True if *version* falls within the affected range of a CPE match entry.
+    Conservative: returns True when no range info is present (include unknown cases).
     """
-    headers = {}
-    if api_key:
-        headers["apiKey"] = api_key
+    if not version:
+        return True
 
-    params = {
-        "keywordSearch": keyword,
-        "resultsPerPage": max(max_results, 20),   # fetch more, filter after
-        "startIndex": 0,
-    }
+    v = _parse_version(version)
+    if v is None:
+        return True
 
+    start_inc = cpe_match.get("versionStartIncluding")
+    start_exc = cpe_match.get("versionStartExcluding")
+    end_inc   = cpe_match.get("versionEndIncluding")
+    end_exc   = cpe_match.get("versionEndExcluding")
+
+    # No range boundaries → check if criteria CPE contains an exact version match
+    if not any([start_inc, start_exc, end_inc, end_exc]):
+        criteria = cpe_match.get("criteria", "")
+        parts = criteria.split(":")
+        # part index 5 is the version field in CPE 2.3
+        if len(parts) > 5 and parts[5] not in ("*", "-", ""):
+            return parts[5] == version
+        return True  # wildcard version in criteria → include conservatively
+
+    if start_inc:
+        s = _parse_version(start_inc)
+        if s is not None and v < s:
+            return False
+
+    if start_exc:
+        s = _parse_version(start_exc)
+        if s is not None and v <= s:
+            return False
+
+    if end_inc:
+        e = _parse_version(end_inc)
+        if e is not None and v > e:
+            return False
+
+    if end_exc:
+        e = _parse_version(end_exc)
+        if e is not None and v >= e:
+            return False
+
+    return True
+
+
+def _cve_affects_version(cve_item: dict, version: str) -> bool:
+    """Return True if any CPE configuration in the CVE covers the given version."""
+    if not version:
+        return True
+
+    configurations = cve_item.get("cve", {}).get("configurations", [])
+    if not configurations:
+        return True  # no config data → include conservatively
+
+    for config in configurations:
+        for node in config.get("nodes", []):
+            for cpe_match in node.get("cpeMatch", []):
+                if not cpe_match.get("vulnerable", False):
+                    continue
+                if _version_in_range(version, cpe_match):
+                    return True
+    return False
+
+
+# ── rate-limited NVD API helper ───────────────────────────────────────────────
+
+def _api_get(url: str, params: dict, api_key: str) -> Optional[dict]:
+    """
+    Single NVD API GET with rate-limit sleep after every call, success or failure.
+    Returns parsed JSON dict or None on error.
+    """
+    headers = {"apiKey": api_key} if api_key else {}
     try:
-        resp = requests.get(NVD_API_URL, params=params, headers=headers, timeout=15)
+        resp = requests.get(url, params=params, headers=headers, timeout=20)
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json()
     except requests.RequestException as exc:
-        warn(f"NVD API error for '{keyword}': {exc}")
-        return []
+        warn(f"NVD API error ({url}): {exc}")
+        return None
+    finally:
+        time.sleep(REQUEST_DELAY)
 
-    entries = []
-    for item in data.get("vulnerabilities", []):
-        cve = item.get("cve", {})
-        cve_id = cve.get("id", "")
 
-        # Description (prefer English)
-        descs = cve.get("descriptions", [])
-        description = next(
-            (d["value"] for d in descs if d.get("lang") == "en"),
-            "No description available.",
-        )
+# ── CPE dictionary lookup ─────────────────────────────────────────────────────
 
-        # CVSS score — prefer v3.1, fall back to v3.0, then v2
-        score, severity, vector = _extract_cvss(cve)
+def _find_cpe_base(product: str, api_key: str) -> Optional[str]:
+    """
+    Query NVD CPE dictionary for *product* and return the best-matching
+    base CPE string like 'cpe:2.3:a:apache:http_server' (no version part).
+    Returns None when no confident match is found.
+    """
+    data = _api_get(NVD_CPE_API_URL, {"keywordSearch": product, "resultsPerPage": 10}, api_key)
+    if not data:
+        return None
 
-        published = cve.get("published", "")[:10]   # just the date part
-        url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+    product_tokens = set(re.findall(r"\w+", product.lower()))
+    best_cpe: Optional[str] = None
+    best_score = 0
 
-        entries.append(CVEEntry(
-            cve_id=cve_id,
-            description=description[:300],           # keep it short
-            cvss_score=score,
-            cvss_severity=severity,
-            cvss_vector=vector,
-            published=published,
-            url=url,
-        ))
+    for p in data.get("products", []):
+        cpe_name = p.get("cpe", {}).get("cpeName", "")
+        if not cpe_name.startswith("cpe:2.3:a:"):
+            continue
+        parts = cpe_name.split(":")
+        if len(parts) < 6:
+            continue
 
-    # Sort by CVSS score descending, return top N
-    entries.sort(key=lambda e: e.cvss_score, reverse=True)
-    return entries[:max_results]
+        vendor_tokens = set(re.findall(r"\w+", parts[3].replace("_", " ").replace("-", " ")))
+        prod_tokens   = set(re.findall(r"\w+", parts[4].replace("_", " ").replace("-", " ")))
+        score = len(product_tokens & (vendor_tokens | prod_tokens))
+
+        if score > best_score:
+            best_score = score
+            best_cpe = f"cpe:2.3:a:{parts[3]}:{parts[4]}"
+
+    return best_cpe if best_score > 0 else None
+
+
+# ── CVE fetchers ──────────────────────────────────────────────────────────────
+
+def _fetch_by_cpe(cpe_base: str, api_key: str) -> list[dict]:
+    """Fetch all CVE items for a given base CPE (wildcard version)."""
+    cpe_query = f"{cpe_base}:*:*:*:*:*:*:*:*"
+    data = _api_get(NVD_CVE_API_URL, {"cpeName": cpe_query, "resultsPerPage": 100}, api_key)
+    return data.get("vulnerabilities", []) if data else []
+
+
+def _fetch_by_keyword(keyword: str, api_key: str) -> list[dict]:
+    """Fetch CVE items via full-text keyword search (fallback)."""
+    data = _api_get(NVD_CVE_API_URL, {"keywordSearch": keyword, "resultsPerPage": 50}, api_key)
+    return data.get("vulnerabilities", []) if data else []
+
+
+# ── entry builder + CVSS ──────────────────────────────────────────────────────
+
+def _build_cve_entry(item: dict) -> Optional[CVEEntry]:
+    """Convert a raw NVD vulnerability item to a CVEEntry."""
+    cve = item.get("cve", {})
+    cve_id = cve.get("id", "")
+    if not cve_id:
+        return None
+
+    descs = cve.get("descriptions", [])
+    description = next(
+        (d["value"] for d in descs if d.get("lang") == "en"),
+        "No description available.",
+    )
+    score, severity, vector = _extract_cvss(cve)
+    published = cve.get("published", "")[:10]
+
+    return CVEEntry(
+        cve_id=cve_id,
+        description=description[:300],
+        cvss_score=score,
+        cvss_severity=severity,
+        cvss_vector=vector,
+        published=published,
+        url=f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+    )
 
 
 def _extract_cvss(cve: dict) -> tuple[float, str, str]:
-    """Extract the best available CVSS score from a CVE entry."""
+    """Extract the best available CVSS score (prefers v3.1 > v3.0 > v2)."""
     metrics = cve.get("metrics", {})
-
     for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
         if key in metrics and metrics[key]:
             m = metrics[key][0].get("cvssData", {})
@@ -179,7 +292,6 @@ def _extract_cvss(cve: dict) -> tuple[float, str, str]:
             severity = m.get("baseSeverity", _score_to_severity(score))
             vector = m.get("vectorString", "")
             return score, severity.capitalize(), vector
-
     return 0.0, "Unknown", ""
 
 
@@ -195,21 +307,66 @@ def _score_to_severity(score: float) -> str:
     return "Critical"
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+# ── main lookup entry point ───────────────────────────────────────────────────
+
+def lookup_cves(
+    keyword: str,
+    product: str = "",
+    version: str = "",
+    max_results: int = 10,
+    api_key: str = "",
+) -> list[CVEEntry]:
+    """
+    Look up CVEs for a product/version using a two-phase strategy:
+      Phase 1 — CPE-based:  find base CPE → query CVEs → filter by version range
+      Phase 2 — Keyword:    fallback full-text search  → filter by version range
+
+    The version-range filter discards CVEs whose affected range does not include
+    the scanned version. When range data is absent, the CVE is included
+    conservatively (could still be relevant).
+
+    Returns up to *max_results* entries sorted by CVSS score descending.
+    """
+    raw_items: list[dict] = []
+    used_cpe = False
+
+    if product and version:
+        cpe_base = _find_cpe_base(product, api_key)
+        if cpe_base:
+            log(f"    CPE: {cpe_base} — querying CVEs …")
+            raw_items = _fetch_by_cpe(cpe_base, api_key)
+            used_cpe = True
+
+    if not raw_items:
+        if used_cpe:
+            log("    CPE query returned nothing — falling back to keyword search …")
+        raw_items = _fetch_by_keyword(keyword, api_key)
+
+    # Version-range filtering — keep CVEs that provably affect this version
+    if version and raw_items:
+        filtered = [item for item in raw_items if _cve_affects_version(item, version)]
+        # Keep originals if filtering removed everything (version may be non-parseable)
+        if filtered:
+            raw_items = filtered
+
+    entries = [e for item in raw_items if (e := _build_cve_entry(item)) is not None]
+    entries.sort(key=lambda e: e.cvss_score, reverse=True)
+    return entries[:max_results]
+
+
+# ── main entry point for nmap integration ────────────────────────────────────
 
 def run_cve_lookup(
     nmap_output: str,
-    max_cves_per_service: int = 5,
+    max_cves_per_service: int = 10,
     api_key: str = "",
 ) -> list[ServiceCVEResult]:
     """
     Parse nmap output, look up CVEs for each discovered service,
     and return a list of ServiceCVEResult objects.
 
-    Args:
-        nmap_output:          Raw stdout from an nmap -sV scan.
-        max_cves_per_service: How many CVEs to return per service (default 5).
-        api_key:              Optional NVD API key.
+    Each service triggers up to 2 NVD API calls (CPE + CVE lookup),
+    each separated by REQUEST_DELAY to stay within NVD rate limits.
     """
     services = parse_nmap_services(nmap_output)
 
@@ -221,13 +378,18 @@ def run_cve_lookup(
     results = []
 
     for svc in services:
-        # Build search keyword: "product version" e.g. "Apache httpd 2.4.49"
         keyword = f"{svc['product']} {svc['version']}".strip()
         if not keyword:
             continue
 
-        log(f"  Querying NVD: '{keyword}' …")
-        cves = lookup_cves(keyword, max_cves_per_service, api_key)
+        log(f"  [{svc['port']}/{svc['protocol']}] {keyword}")
+        cves = lookup_cves(
+            keyword=keyword,
+            product=svc["product"],
+            version=svc["version"],
+            max_results=max_cves_per_service,
+            api_key=api_key,
+        )
 
         results.append(ServiceCVEResult(
             port=svc["port"],
@@ -238,9 +400,6 @@ def run_cve_lookup(
             cves=cves,
         ))
 
-        # Respect NVD rate limit between requests
-        time.sleep(REQUEST_DELAY)
-
     total_cves = sum(len(r.cves) for r in results)
-    log(f"CVE lookup complete — {total_cves} CVE(s) found across {len(results)} service(s)")
+    log(f"CVE lookup complete — {total_cves} CVE(s) across {len(results)} service(s)")
     return results

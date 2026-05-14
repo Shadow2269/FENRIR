@@ -6,4 +6,4 @@ markdown2>=2.4.13
 python-nmap>=0.7.1
 requests>=2.31.0
 pydantic>=2.7.0
- 
+xhtml2pdf>=0.2.11
