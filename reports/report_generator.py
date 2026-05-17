@@ -330,9 +330,12 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
             "## CVE Findings",
             "",
         ]
-        total_cves = sum(len(r.cves) for r in cve_results)
+        total_verified   = sum(len(r.verified_cves)   for r in cve_results)
+        total_unverified = sum(len(r.unverified_cves) for r in cve_results)
+        total_cves = total_verified + total_unverified
+        note = f" ({total_verified} verified, {total_unverified} unverified)" if total_unverified else ""
         lines.append(
-            f"> **{total_cves} CVE(s)** found across "
+            f"> **{total_cves} CVE(s){note}** found across "
             f"{sum(1 for r in cve_results if r.cves)} service(s).\n"
         )
 
@@ -349,27 +352,41 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
                 ]
                 continue
 
-            # Highest severity for this service
-            top_severity = _top_severity(svc_result.cves)
+            verified   = svc_result.verified_cves
+            unverified = svc_result.unverified_cves
+
+            top_severity = _top_severity(verified or svc_result.cves)
             sev_icon     = _severity_icon(top_severity)
 
-            lines += [
-                f"### {sev_icon} {port_label} — {svc_label}",
-                "",
-                "| CVE ID | CVSS | Severity | Published | Description |",
-                "|---|---|---|---|---|",
-            ]
-            for cve in svc_result.cves:
-                cvss      = getattr(cve, "cvss_score", "N/A")
-                severity  = getattr(cve, "cvss_severity", "N/A")
-                published = getattr(cve, "published",  "N/A")
-                desc      = getattr(cve, "description", "")
-                short_desc = (desc[:120] + "…") if len(desc) > 120 else desc
-                lines.append(
-                    f"| `{cve.cve_id}` | {cvss} | {severity} "
-                    f"| {published} | {short_desc} |"
-                )
-            lines.append("")
+            lines += [f"### {sev_icon} {port_label} — {svc_label}", ""]
+
+            def _cve_table_rows(cves) -> list[str]:
+                rows = [
+                    "| CVE ID | CVSS | Severity | Published | Description |",
+                    "|---|---|---|---|---|",
+                ]
+                for cve in cves:
+                    desc = getattr(cve, "description", "")
+                    short_desc = (desc[:120] + "…") if len(desc) > 120 else desc
+                    rows.append(
+                        f"| `{cve.cve_id}` | {getattr(cve, 'cvss_score', 'N/A')} "
+                        f"| {getattr(cve, 'cvss_severity', 'N/A')} "
+                        f"| {getattr(cve, 'published', 'N/A')} | {short_desc} |"
+                    )
+                return rows
+
+            if verified:
+                lines += _cve_table_rows(verified)
+                lines.append("")
+
+            if unverified:
+                lines += [
+                    "> ⚠ **Unverified CVEs** — version range could not be confirmed against NVD data.",
+                    "> These may be false positives. Manual verification recommended before reporting.",
+                    "",
+                ]
+                lines += _cve_table_rows(unverified)
+                lines.append("")
 
     # ── Recommendations ───────────────────────────────────────────────────────
     recs = _nmap_recommendations(ports, cve_results)
@@ -642,23 +659,31 @@ def _severity_icon(severity: str) -> str:
 
 
 def _nmap_risk(nmap_result: dict, cve_results: list) -> tuple[str, str]:
-    """Derive an overall risk label from CVE findings."""
+    """Derive an overall risk label from verified CVE findings only."""
     if not nmap_result["success"]:
         return "⚪ UNKNOWN", "Scan did not complete successfully"
 
     if not cve_results or not any(r.cves for r in cve_results):
         return "🟢 LOW", "No CVEs found"
 
-    all_cves  = [c for r in cve_results for c in r.cves]
-    severities = [getattr(c, "cvss_severity", "None") or "None" for c in all_cves]
+    verified   = [c for r in cve_results for c in r.verified_cves]
+    unverified_count = sum(len(r.unverified_cves) for r in cve_results)
+
+    if not verified:
+        if unverified_count:
+            return "🟡 MEDIUM", f"{unverified_count} unverified CVE(s) — manual review required"
+        return "🟢 LOW", "No CVEs found"
+
+    severities = [getattr(c, "cvss_severity", "None") or "None" for c in verified]
+    suffix = f" (+{unverified_count} unverified)" if unverified_count else ""
 
     if "Critical" in severities:
-        return "🔴 CRITICAL", f"{severities.count('Critical')} critical CVE(s) detected"
+        return "🔴 CRITICAL", f"{severities.count('Critical')} verified critical CVE(s){suffix}"
     if "High" in severities:
-        return "🟠 HIGH", f"{severities.count('High')} high-severity CVE(s) detected"
+        return "🟠 HIGH", f"{severities.count('High')} verified high-severity CVE(s){suffix}"
     if "Medium" in severities:
-        return "🟡 MEDIUM", f"{severities.count('Medium')} medium-severity CVE(s) detected"
-    return "🔵 LOW", f"{len(all_cves)} low-severity CVE(s) detected"
+        return "🟡 MEDIUM", f"{severities.count('Medium')} verified medium-severity CVE(s){suffix}"
+    return "🔵 LOW", f"{len(verified)} verified low-severity CVE(s){suffix}"
 
 
 def _nmap_recommendations(ports: list, cve_results: list) -> list[str]:
@@ -1482,11 +1507,13 @@ def _collect_findings(full_result: dict) -> list[_Finding]:
     for svc in full_result.get("cve_results", []):
         for cve in svc.cves:
             sev = cve.cvss_severity or "Unknown"
+            is_unverified = getattr(cve, "confidence", "verified") == "unverified"
+            prefix = "[UNVERIFIED] " if is_unverified else ""
             findings.append(_Finding(
                 severity=sev,
                 cvss=cve.cvss_score,
-                category="CVE",
-                title=f"{cve.cve_id} — {cve.description[:80]}",
+                category="CVE" if not is_unverified else "CVE (unverified)",
+                title=f"{prefix}{cve.cve_id} — {cve.description[:80]}",
                 context=f"Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}".strip(),
                 action=f"Patch / update {svc.product}. Details: {cve.url}",
             ))
@@ -1770,21 +1797,42 @@ def generate_full_scan_report(full_result: dict) -> str:
         for svc in cve_results:
             if not svc.cves:
                 continue
-            top_sev  = _top_severity(svc.cves)
+            verified   = svc.verified_cves
+            unverified = svc.unverified_cves
+            top_sev  = _top_severity(verified or svc.cves)
             sev_icon = _severity_icon(top_sev)
             lines += [
                 f"#### {sev_icon} Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}",
                 "",
-                "| CVE ID | CVSS | Severity | Published | Description |",
-                "|---|---|---|---|---|",
             ]
-            for cve in svc.cves:
-                desc = (cve.description[:100] + "…") if len(cve.description) > 100 else cve.description
-                lines.append(
-                    f"| [`{cve.cve_id}`]({cve.url}) | {cve.cvss_score} "
-                    f"| {cve.cvss_severity} | {cve.published} | {desc} |"
-                )
-            lines.append("")
+
+            def _full_cve_rows(cves, label: str = "") -> list[str]:
+                if not cves:
+                    return []
+                rows = []
+                if label:
+                    rows.append(f"**{label}**")
+                    rows.append("")
+                rows += [
+                    "| CVE ID | CVSS | Severity | Published | Description |",
+                    "|---|---|---|---|---|",
+                ]
+                for cve in cves:
+                    desc = (cve.description[:100] + "…") if len(cve.description) > 100 else cve.description
+                    rows.append(
+                        f"| [`{cve.cve_id}`]({cve.url}) | {cve.cvss_score} "
+                        f"| {cve.cvss_severity} | {cve.published} | {desc} |"
+                    )
+                rows.append("")
+                return rows
+
+            lines += _full_cve_rows(verified)
+            if unverified:
+                lines += [
+                    "> ⚠ **Unverified** — version range not confirmed in NVD. Manual review needed.",
+                    "",
+                ]
+                lines += _full_cve_rows(unverified)
 
     # ── Detailed Findings: SSL/TLS ────────────────────────────────────────────
     if ssl_results:

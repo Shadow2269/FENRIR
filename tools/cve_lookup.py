@@ -38,6 +38,7 @@ class CVEEntry:
     cvss_vector: str
     published: str
     url: str
+    confidence: str = "verified"  # "verified" | "unverified"
 
 
 @dataclass
@@ -60,6 +61,14 @@ class ServiceCVEResult:
     @property
     def high_cves(self) -> list[CVEEntry]:
         return [c for c in self.cves if c.cvss_severity == "High"]
+
+    @property
+    def verified_cves(self) -> list[CVEEntry]:
+        return [c for c in self.cves if c.confidence == "verified"]
+
+    @property
+    def unverified_cves(self) -> list[CVEEntry]:
+        return [c for c in self.cves if c.confidence == "unverified"]
 
 
 # ── nmap output parser ────────────────────────────────────────────────────────
@@ -166,23 +175,42 @@ def _version_in_range(version: str, cpe_match: dict) -> bool:
     return True
 
 
-def _cve_affects_version(cve_item: dict, version: str) -> bool:
-    """Return True if any CPE configuration in the CVE covers the given version."""
+def _cve_affects_version(cve_item: dict, version: str) -> tuple[bool, bool]:
+    """Return (matches, is_verified).
+
+    is_verified=True only when NVD version-range data explicitly confirms the match
+    (range boundaries or exact CPE version field). is_verified=False when the match
+    is conservative (no configuration data, or wildcard CPE version field).
+    """
     if not version:
-        return True
+        return True, False
 
     configurations = cve_item.get("cve", {}).get("configurations", [])
     if not configurations:
-        return True  # no config data → include conservatively
+        return True, False  # no config data → conservative include, not verified
 
     for config in configurations:
         for node in config.get("nodes", []):
             for cpe_match in node.get("cpeMatch", []):
                 if not cpe_match.get("vulnerable", False):
                     continue
-                if _version_in_range(version, cpe_match):
-                    return True
-    return False
+                if not _version_in_range(version, cpe_match):
+                    continue
+                # Determine if this is an explicit range/version match
+                has_range = any([
+                    cpe_match.get("versionStartIncluding"),
+                    cpe_match.get("versionStartExcluding"),
+                    cpe_match.get("versionEndIncluding"),
+                    cpe_match.get("versionEndExcluding"),
+                ])
+                if has_range:
+                    return True, True
+                # Exact version in CPE criteria (not wildcard)
+                parts = cpe_match.get("criteria", "").split(":")
+                if len(parts) > 5 and parts[5] not in ("*", "-", ""):
+                    return True, True
+                return True, False  # wildcard CPE version → conservative
+    return False, False
 
 
 # ── rate-limited NVD API helper ───────────────────────────────────────────────
@@ -342,15 +370,43 @@ def lookup_cves(
             log("    CPE query returned nothing — falling back to keyword search …")
         raw_items = _fetch_by_keyword(keyword, api_key)
 
-    # Version-range filtering — keep CVEs that provably affect this version
-    if version and raw_items:
-        filtered = [item for item in raw_items if _cve_affects_version(item, version)]
-        # Keep originals if filtering removed everything (version may be non-parseable)
-        if filtered:
-            raw_items = filtered
+    # Version-range filtering with confidence tracking
+    verified_items: list[dict] = []
+    unverified_items: list[dict] = []
 
-    entries = [e for item in raw_items if (e := _build_cve_entry(item)) is not None]
-    entries.sort(key=lambda e: e.cvss_score, reverse=True)
+    if version and raw_items:
+        for item in raw_items:
+            matches, is_verified = _cve_affects_version(item, version)
+            if matches:
+                if is_verified and used_cpe:
+                    verified_items.append(item)
+                else:
+                    unverified_items.append(item)
+        # Keep originals as unverified if filtering removed everything
+        if not verified_items and not unverified_items:
+            unverified_items = raw_items
+    else:
+        unverified_items = raw_items
+
+    # Keyword-fallback items are always unverified regardless of version check
+    if not used_cpe:
+        unverified_items = verified_items + unverified_items
+        verified_items = []
+
+    entries: list[CVEEntry] = []
+    for item in verified_items:
+        e = _build_cve_entry(item)
+        if e:
+            e.confidence = "verified"
+            entries.append(e)
+    for item in unverified_items:
+        e = _build_cve_entry(item)
+        if e:
+            e.confidence = "unverified"
+            entries.append(e)
+
+    # Verified CVEs first, then by CVSS descending
+    entries.sort(key=lambda e: (e.confidence == "verified", e.cvss_score), reverse=True)
     return entries[:max_results]
 
 

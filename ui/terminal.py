@@ -31,7 +31,7 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v1.1.0", style="bold white")
+    banner.append("  v1.1.1", style="bold white")
 
     console.print(Panel(
         banner,
@@ -228,15 +228,19 @@ def print_cve_results(cve_results: list):
     console.print(Rule("[bold]CVE Lookup Results[/bold]", style="red"))
 
     for svc in cve_results:
-        label = f"{svc.product} {svc.version}".strip() or svc.service
+        label      = f"{svc.product} {svc.version}".strip() or svc.service
+        verified   = svc.verified_cves
+        unverified = svc.unverified_cves
         icon  = "🔴" if svc.critical_cves else ("🟠" if svc.high_cves else "🟡")
-        title = f"{icon}  Port [bold]{svc.port}/{svc.protocol}[/bold] — {label}"
+        uv_note = f" [dim yellow]({len(unverified)} unverified)[/dim yellow]" if unverified else ""
+        title = f"{icon}  Port [bold]{svc.port}/{svc.protocol}[/bold] — {label}{uv_note}"
 
         if not svc.cves:
             console.print(Panel("[dim]No CVEs found.[/dim]", title=title, border_style="dim"))
             continue
 
         table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+        table.add_column("",            width=2,  justify="center")
         table.add_column("CVE ID",      style="cyan bold",  width=18)
         table.add_column("CVSS",        style="white",       width=6,  justify="right")
         table.add_column("Severity",    width=10)
@@ -250,17 +254,33 @@ def print_cve_results(cve_results: list):
                 "Medium":   "yellow",
                 "Low":      "green",
             }.get(cve.cvss_severity, "white")
+            is_unverified = getattr(cve, "confidence", "verified") == "unverified"
+            conf_icon  = Text("⚠", style="dim yellow") if is_unverified else Text("✓", style="dim green")
+            desc_style = "dim yellow" if is_unverified else "dim"
 
             table.add_row(
+                conf_icon,
                 cve.cve_id,
                 f"{cve.cvss_score:.1f}",
                 Text(cve.cvss_severity, style=sev_color),
                 cve.published,
-                cve.description[:80] + ("…" if len(cve.description) > 80 else ""),
+                Text(cve.description[:80] + ("…" if len(cve.description) > 80 else ""), style=desc_style),
             )
 
-        border = "red" if svc.critical_cves else ("yellow" if svc.high_cves else "dim")
-        console.print(Panel(table, title=title, border_style=border))
+        from rich.console import Group
+        parts = [table]
+        if unverified:
+            parts.append(Text(
+                f"\n  ⚠ {len(unverified)} unverified CVE(s) — version range not confirmed in NVD. "
+                "Manual review recommended before reporting.",
+                style="dim yellow",
+            ))
+
+        border = ("red" if verified and svc.critical_cves
+                  else "yellow" if verified and svc.high_cves
+                  else "dim yellow" if unverified
+                  else "dim")
+        console.print(Panel(Group(*parts), title=title, border_style=border))
 
 
 def print_redteam_results(report):
