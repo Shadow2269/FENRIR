@@ -1141,6 +1141,108 @@ def generate_subdomain_report(result) -> str:
     return filename
 
 
+# ── Open Redirect Report ─────────────────────────────────────────────────────
+
+def generate_redirect_report(result) -> str:
+    """Generate a PDF report from a RedirectResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/redirect_{safe}_{ts}.pdf"
+
+    risk = "🔴 HIGH" if result.has_findings else "🟢 NONE"
+
+    lines = [
+        "# Open Redirect Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**  | `{result.target}` |",
+        f"| **Status**      | {'Success' if result.success else 'Failed'} |",
+        f"| **Findings**    | {len(result.findings)} |",
+        f"| **Risk Level**  | {risk} |",
+        f"| **Timestamp**   | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Findings",
+            "",
+            "> The server issues a redirect to an attacker-controlled domain when",
+            "> the listed parameters receive an external URL as their value.",
+            "",
+            "| Parameter | Payload | Status | Location Header |",
+            "|---|---|---|---|",
+        ]
+        for f in result.findings:
+            loc_trunc = f.location_header[:60] + ("..." if len(f.location_header) > 60 else "")
+            lines.append(
+                f"| `{f.parameter}` | `{f.payload}` | {f.status_code} | `{loc_trunc}` |"
+            )
+        lines.append("")
+
+        lines += ["## Detailed Findings", ""]
+        for i, f in enumerate(result.findings, 1):
+            lines += [
+                f"### Finding {i} — Parameter `{f.parameter}`",
+                "",
+                f"**Tested URL:** `{f.url_tested}`  ",
+                f"**Payload:** `{f.payload}`  ",
+                f"**HTTP Status:** {f.status_code}  ",
+                f"**Location header:** `{f.location_header}`  ",
+                "",
+                "**Impact:** An attacker can craft a link to your application that "
+                "silently forwards victims to a phishing or malware site. "
+                "Because the link originates from a trusted domain it bypasses "
+                "email filters and user vigilance.",
+                "",
+            ]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- **Allowlist redirect destinations** — only permit redirects to a fixed set of "
+            "trusted internal paths or domains.",
+            "- **Reject absolute URLs in redirect parameters** — if only local redirects "
+            "are needed, validate that the value starts with `/` and does not contain `://` or `//`.",
+            "- **Use indirect references** — map redirect targets to opaque tokens server-side "
+            "instead of accepting raw URLs from the client.",
+            "",
+            "Example safe redirect validation (Python):",
+            "",
+            "```python",
+            "from urllib.parse import urlparse",
+            "",
+            "ALLOWED_HOSTS = {'app.yourdomain.com'}",
+            "",
+            "def safe_redirect(url: str, default: str = '/') -> str:",
+            "    parsed = urlparse(url)",
+            "    if parsed.netloc and parsed.netloc not in ALLOWED_HOSTS:",
+            "        return default",
+            "    return url",
+            "```",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No open redirect vulnerabilities detected. The server did not issue",
+            "external redirects in response to the tested parameters and payloads.",
+            "",
+            "_Note: This scan tests common parameter names. Custom or obfuscated_",
+            "_parameter names may require manual testing._",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
 # ── Full Scan Report ──────────────────────────────────────────────────────────
 
 _SEVERITY_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0}

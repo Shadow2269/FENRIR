@@ -10,7 +10,7 @@ from reports.report_generator import (
     generate_nmap_report, generate_redteam_report,
     generate_gobuster_report, generate_full_scan_report,
     generate_subdomain_report, generate_takeover_report,
-    generate_cors_report,
+    generate_cors_report, generate_redirect_report,
 )
 
 
@@ -497,6 +497,38 @@ def run_takeover_mode(domain: str):
     ui.print_report_saved(path)
 
 
+# ── Mode: Open Redirect Scanner ──────────────────────────────────────────────
+
+def run_redirect_mode(url: str):
+    from tools.redirect_scanner import scan_redirect
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    total_params = 29   # _REDIRECT_PARAMS count
+    total_payloads = 9  # _PAYLOADS count
+    ui.print_info(f"Testing {total_params} redirect parameters × {total_payloads} payloads against: {url}")
+
+    with ui.spinner(f"Open Redirect scan {url} …") as prog:
+        task = prog.add_task("redirect scan", total=None)
+        result = scan_redirect(url, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_redirect_results(result)
+    path = generate_redirect_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Interactive menu loop ─────────────────────────────────────────────────────
 
 def run_menu():
@@ -547,6 +579,12 @@ def run_menu():
             url = ui.prompt_target("Target URL (e.g. https://api.example.com/user)")
             if url:
                 run_cors_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "redirect":
+            url = ui.prompt_target("Target URL (e.g. https://target.com/login?next=/dashboard)")
+            if url:
+                run_redirect_mode(url)
                 input("\n  Press Enter to return to menu …")
 
         elif mode == "redteam":
@@ -611,6 +649,13 @@ if __name__ == "__main__":
             sys.exit(1)
         ui.print_banner()
         run_cors_mode(args[1])
+
+    elif args[0] == "redirect":
+        if len(args) < 2:
+            ui.print_error("redirect mode requires a URL. Example: python main.py redirect https://target.com/login")
+            sys.exit(1)
+        ui.print_banner()
+        run_redirect_mode(args[1])
 
     else:
         ui.print_error(f"Unknown mode: '{args[0]}'")

@@ -52,8 +52,9 @@ MENU_OPTIONS = [
     ("4", "subdomain",  "Subdomain Enum",  "Enumerate subdomains via subfinder / amass / crt.sh"),
     ("5", "takeover",   "Takeover Check",  "Check subdomains for dangling CNAME takeover vulnerabilities"),
     ("6", "cors",       "CORS Scanner",    "Detect CORS misconfigurations (origin reflection, null, wildcard)"),
-    ("7", "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
-    ("8", "quit",       "Exit",            "Quit the program"),
+    ("7", "redirect",   "Open Redirect",   "Test URL parameters for open redirect vulnerabilities"),
+    ("8", "redteam",   "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("9", "quit",      "Exit",            "Quit the program"),
 ]
 
 
@@ -537,6 +538,42 @@ def print_subdomain_results(result):
     console.print(Panel(table,
                         title=f"[bold]All Subdomains ({result.count})[/bold]",
                         border_style="dim red"))
+
+
+def print_redirect_results(result):
+    """Display open redirect scan results."""
+    console.print()
+    console.print(Rule(f"[bold]Open Redirect Scanner — {result.target}[/bold]", style="red"))
+
+    if not result.findings:
+        if result.error:
+            console.print(f"  [red]Error: {result.error}[/red]")
+        else:
+            console.print("  [dim green]No open redirect vulnerabilities detected.[/dim green]")
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("",          width=3,  justify="center")
+    table.add_column("Parameter", style="cyan bold",  width=18)
+    table.add_column("Payload",   style="dim",         ratio=2)
+    table.add_column("Status",    width=8,  justify="center")
+    table.add_column("Location",  style="dim",         ratio=3)
+
+    for f in result.findings:
+        loc_trunc = f.location_header[:55] + ("…" if len(f.location_header) > 55 else "")
+        table.add_row(
+            "🔴",
+            f.parameter,
+            f.payload,
+            Text(str(f.status_code), style="bold yellow"),
+            loc_trunc,
+        )
+
+    console.print(Panel(
+        table,
+        title=f"[bold red]Open Redirect Findings ({len(result.findings)})[/bold red]",
+        border_style="red",
+    ))
 
 
 def print_report_saved(path: str):
