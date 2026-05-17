@@ -1141,6 +1141,116 @@ def generate_subdomain_report(result) -> str:
     return filename
 
 
+# ── XSS Report ───────────────────────────────────────────────────────────────
+
+def generate_xss_report(result) -> str:
+    """Generate a PDF report from an XSSResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/xss_{safe}_{ts}.pdf"
+
+    confirmed = result.confirmed
+    risk = (
+        "🔴 HIGH"   if confirmed else
+        "🟡 MEDIUM" if result.has_findings else
+        "🟢 NONE"
+    )
+
+    lines = [
+        "# Reflected XSS Scan Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**       | `{result.target}` |",
+        f"| **Status**           | {'Success' if result.success else 'Failed'} |",
+        f"| **Confirmed XSS**    | {len(confirmed)} |",
+        f"| **Risk Level**       | {risk} |",
+        f"| **Timestamp**        | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if confirmed:
+        lines += [
+            "## Confirmed Reflected XSS Findings",
+            "",
+            "> The payload was found **unescaped** in the HTTP response body.",
+            "> This confirms exploitable reflected XSS in the listed parameters.",
+            "",
+            "| Parameter | Payload | URL Tested |",
+            "|---|---|---|",
+        ]
+        for f in confirmed:
+            payload_trunc = f.payload[:60] + ("..." if len(f.payload) > 60 else "")
+            url_trunc = f.url_tested[:80] + ("..." if len(f.url_tested) > 80 else "")
+            lines.append(f"| `{f.parameter}` | `{payload_trunc}` | `{url_trunc}` |")
+        lines.append("")
+
+        lines += ["## Detailed Findings", ""]
+        for i, f in enumerate(confirmed, 1):
+            lines += [
+                f"### Finding {i} — Parameter `{f.parameter}`",
+                "",
+                f"**Payload:** `{f.payload}`  ",
+                f"**Tested URL:** `{f.url_tested}`  ",
+                "",
+                "**Response snippet (context around reflection):**",
+                "",
+                "```",
+                f.response_snippet.strip()[:300],
+                "```",
+                "",
+                "**Impact:** An attacker can inject arbitrary JavaScript that executes in the "
+                "victim's browser session — enabling cookie theft, session hijacking, "
+                "keylogging, and phishing overlays.",
+                "",
+            ]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- **HTML-encode all user-supplied values** before inserting them into HTML context.",
+            "- **Use a Content Security Policy (CSP)** header with a strict script-src "
+            "to block inline script execution as a defence-in-depth measure.",
+            "- **Validate and sanitize input server-side** — do not rely on client-side filtering alone.",
+            "- Use a templating engine with auto-escaping enabled (Jinja2's `autoescape=True`, "
+            "Django templates, etc.).",
+            "",
+            "Example (Python / Jinja2):",
+            "",
+            "```python",
+            "from markupsafe import escape",
+            "",
+            "# Always escape before embedding in HTML",
+            "safe_value = escape(user_input)",
+            "```",
+            "",
+            "Recommended CSP header:",
+            "",
+            "```",
+            "Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'",
+            "```",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No reflected XSS detected. The tested parameters did not return",
+            "injected payloads unescaped in the response body.",
+            "",
+            "_Note: This scan covers reflected XSS via GET parameters only._",
+            "_DOM-based and stored XSS require additional manual testing._",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
 # ── Open Redirect Report ─────────────────────────────────────────────────────
 
 def generate_redirect_report(result) -> str:

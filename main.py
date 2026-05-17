@@ -11,6 +11,7 @@ from reports.report_generator import (
     generate_gobuster_report, generate_full_scan_report,
     generate_subdomain_report, generate_takeover_report,
     generate_cors_report, generate_redirect_report,
+    generate_xss_report,
 )
 
 
@@ -497,6 +498,41 @@ def run_takeover_mode(domain: str):
     ui.print_report_saved(path)
 
 
+# ── Mode: XSS Scanner ────────────────────────────────────────────────────────
+
+def run_xss_mode(url: str):
+    from tools.xss_scanner import scan_xss, _PAYLOADS, _extract_params
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    params = _extract_params(url) or {"q": [""]}
+    total = len(params) * len(_PAYLOADS)
+    ui.print_info(
+        f"Testing {len(params)} parameter(s) × {len(_PAYLOADS)} payloads "
+        f"= {total} requests against: {url}"
+    )
+
+    with ui.spinner(f"XSS scan {url} …") as prog:
+        task = prog.add_task("xss scan", total=None)
+        result = scan_xss(url, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_xss_results(result)
+    path = generate_xss_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Mode: Open Redirect Scanner ──────────────────────────────────────────────
 
 def run_redirect_mode(url: str):
@@ -587,6 +623,12 @@ def run_menu():
                 run_redirect_mode(url)
                 input("\n  Press Enter to return to menu …")
 
+        elif mode == "xss":
+            url = ui.prompt_target("Target URL with params (e.g. http://target.com/search?q=test)")
+            if url:
+                run_xss_mode(url)
+                input("\n  Press Enter to return to menu …")
+
         elif mode == "redteam":
             target_name, rt_mode, http_url = ui.prompt_redteam_target()
             if target_name:
@@ -656,6 +698,13 @@ if __name__ == "__main__":
             sys.exit(1)
         ui.print_banner()
         run_redirect_mode(args[1])
+
+    elif args[0] == "xss":
+        if len(args) < 2:
+            ui.print_error("xss mode requires a URL. Example: python main.py xss http://target.com/search?q=test")
+            sys.exit(1)
+        ui.print_banner()
+        run_xss_mode(args[1])
 
     else:
         ui.print_error(f"Unknown mode: '{args[0]}'")

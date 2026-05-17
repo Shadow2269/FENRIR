@@ -53,8 +53,9 @@ MENU_OPTIONS = [
     ("5", "takeover",   "Takeover Check",  "Check subdomains for dangling CNAME takeover vulnerabilities"),
     ("6", "cors",       "CORS Scanner",    "Detect CORS misconfigurations (origin reflection, null, wildcard)"),
     ("7", "redirect",   "Open Redirect",   "Test URL parameters for open redirect vulnerabilities"),
-    ("8", "redteam",   "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
-    ("9", "quit",      "Exit",            "Quit the program"),
+    ("8", "xss",       "XSS Scanner",     "Inject XSS payloads into URL parameters and detect reflection"),
+    ("9", "redteam",   "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("0", "quit",      "Exit",            "Quit the program"),
 ]
 
 
@@ -538,6 +539,47 @@ def print_subdomain_results(result):
     console.print(Panel(table,
                         title=f"[bold]All Subdomains ({result.count})[/bold]",
                         border_style="dim red"))
+
+
+def print_xss_results(result):
+    """Display XSS scan results."""
+    console.print()
+    console.print(Rule(f"[bold]XSS Scanner — {result.target}[/bold]", style="red"))
+
+    if not result.findings:
+        if result.error:
+            console.print(f"  [red]Error: {result.error}[/red]")
+        else:
+            console.print("  [dim green]No reflected XSS detected.[/dim green]")
+        return
+
+    confirmed = result.confirmed
+    console.print(
+        f"  Reflected findings: [bold red]{len(confirmed)}[/bold red]  |  "
+        f"Parameters tested: [dim]{len({f.parameter for f in result.findings})}[/dim]"
+    )
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("",          width=3, justify="center")
+    table.add_column("Parameter", style="cyan bold", width=14)
+    table.add_column("Payload",   style="dim",        ratio=2)
+    table.add_column("Snippet",   style="dim",        ratio=3)
+
+    for f in confirmed:
+        snippet = f.response_snippet.replace("\n", " ").strip()[:70]
+        snippet += "…" if len(f.response_snippet) > 70 else ""
+        table.add_row(
+            "🔴",
+            f.parameter,
+            f.payload[:50] + ("…" if len(f.payload) > 50 else ""),
+            snippet,
+        )
+
+    console.print(Panel(
+        table,
+        title=f"[bold red]Reflected XSS Findings ({len(confirmed)})[/bold red]",
+        border_style="red",
+    ))
 
 
 def print_redirect_results(result):
