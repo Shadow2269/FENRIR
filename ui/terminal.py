@@ -72,7 +72,7 @@ def print_main_menu():
     table.add_column("desc", style="dim",         width=50)
 
     for key, _, label, desc in MENU_OPTIONS:
-        table.add_row(f"[{key}]", label, desc)
+        table.add_row(Text(f"[{key}]", style="bold red"), label, desc)
 
     console.print(Panel(table, title="[bold]Main Menu[/bold]", border_style="dim red"))
     console.print()
