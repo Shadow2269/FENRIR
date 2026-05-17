@@ -23,7 +23,7 @@ MAX_TOKENS: int = 2048
 DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
 
 # ── Allowed attack tools ──────────────────────────────────────────────────────
-ALLOWED_TOOLS: list[str] = ["nmap", "gobuster"]
+ALLOWED_TOOLS: list[str] = ["nmap", "gobuster", "subdomain"]
 
 # ── Allowed scan targets (IPs, CIDRs, hostnames) ──────────────────────────────
 ALLOWED_TARGETS: list[str] = [

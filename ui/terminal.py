@@ -46,11 +46,12 @@ def print_banner():
 # ── Main menu ─────────────────────────────────────────────────────────────────
 
 MENU_OPTIONS = [
-    ("1", "fullscan",  "Full Scan",      "Complete assessment: Nmap + CVE + SSL + HTTP Headers + Dirs"),
-    ("2", "nmap",      "Nmap Scan",      "Scan a target for open ports, services and CVEs"),
-    ("3", "gobuster",  "Dir Bruteforce", "Find hidden paths on a web server"),
-    ("4", "redteam",   "AI Red-Team",    "Fire adversarial prompts against an AI endpoint"),
-    ("5", "quit",      "Exit",           "Quit the program"),
+    ("1", "fullscan",   "Full Scan",       "Complete assessment: Nmap + CVE + SSL + HTTP Headers + Dirs"),
+    ("2", "nmap",       "Nmap Scan",       "Scan a target for open ports, services and CVEs"),
+    ("3", "gobuster",   "Dir Bruteforce",  "Find hidden paths on a web server"),
+    ("4", "subdomain",  "Subdomain Enum",  "Enumerate subdomains via subfinder / amass / crt.sh"),
+    ("5", "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("6", "quit",       "Exit",            "Quit the program"),
 ]
 
 
@@ -416,6 +417,41 @@ def print_http_header_results(http_results: list):
 
         from rich.console import Group
         console.print(Panel(Group(*lines), title=title, border_style=border))
+
+
+def print_subdomain_results(result):
+    """Display subdomain enumeration results."""
+    console.print()
+    console.print(Rule(f"[bold]Subdomain Enumeration — {result.target}[/bold]", style="red"))
+    console.print(f"  Source: [dim]{result.source}[/dim]   "
+                  f"Found: [bold white]{result.count}[/bold white] subdomain(s)")
+
+    if not result.subdomains:
+        console.print("  [dim]No subdomains discovered.[/dim]")
+        return
+
+    # High-interest subdomains panel
+    if result.interesting:
+        hi_table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+        hi_table.add_column("High-Interest Subdomain", style="bold yellow", ratio=1)
+        for sub in result.interesting:
+            hi_table.add_row(sub)
+        console.print(Panel(hi_table,
+                            title="[bold yellow]High-Interest Subdomains[/bold yellow]",
+                            border_style="yellow"))
+
+    # Full list
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("#",          style="dim",        width=5,  justify="right")
+    table.add_column("Subdomain",  style="cyan",       ratio=1)
+
+    for i, sub in enumerate(result.subdomains, 1):
+        style = "bold yellow" if sub in result.interesting else ""
+        table.add_row(str(i), Text(sub, style=style))
+
+    console.print(Panel(table,
+                        title=f"[bold]All Subdomains ({result.count})[/bold]",
+                        border_style="dim red"))
 
 
 def print_report_saved(path: str):

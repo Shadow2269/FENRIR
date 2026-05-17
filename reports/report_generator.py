@@ -895,6 +895,77 @@ def generate_gobuster_report(result) -> str:
     return filename
 
 
+# ── Subdomain Report ─────────────────────────────────────────────────────────
+
+def generate_subdomain_report(result) -> str:
+    """Generate a PDF report from a SubdomainResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace(".", "_")
+    filename = f"{REPORT_DIR}/subdomain_{safe}_{ts}.pdf"
+
+    status_icon = "✅" if result.success else "❌"
+    lines = [
+        "# Subdomain Enumeration Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target Domain** | `{result.target}` |",
+        f"| **Status**        | {status_icon} {'Success' if result.success else 'Failed'} |",
+        f"| **Source**        | {result.source} |",
+        f"| **Timestamp**     | {ts} |",
+        f"| **Subdomains**    | {result.count} |",
+        "",
+    ]
+
+    if result.error:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.interesting:
+        lines += [
+            "## High-Interest Subdomains",
+            "",
+            "> These subdomains commonly indicate sensitive services (admin, API, dev, staging, etc.).",
+            "",
+            "| Subdomain |",
+            "|---|",
+        ]
+        for sub in result.interesting:
+            lines.append(f"| `{sub}` |")
+        lines.append("")
+
+    if result.subdomains:
+        lines += [
+            "## All Discovered Subdomains",
+            "",
+            "| # | Subdomain |",
+            "|---|---|",
+        ]
+        for i, sub in enumerate(result.subdomains, 1):
+            lines.append(f"| {i} | `{sub}` |")
+        lines.append("")
+
+        lines += [
+            "## Recommendations",
+            "",
+            f"- **{result.count} subdomain(s) found.** Review each for unintended exposure.",
+            "- Run a port scan (Nmap Full Scan) against newly discovered subdomains.",
+            "- Check for subdomain takeover: CNAME records pointing to decommissioned services.",
+            "- Pay special attention to: `dev.`, `api.`, `staging.`, `admin.`, `internal.`, `vpn.`",
+        ]
+        if result.interesting:
+            lines.append(
+                f"- **{len(result.interesting)} high-interest subdomain(s)** detected — "
+                "prioritise these for further scanning."
+            )
+        lines.append("")
+    else:
+        lines += ["_No subdomains discovered._", ""]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
 # ── Full Scan Report ──────────────────────────────────────────────────────────
 
 _SEVERITY_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0}

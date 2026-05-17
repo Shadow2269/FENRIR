@@ -6,7 +6,11 @@ import sys
 import re
 from ui import terminal as ui
 from tools.nmap_tool import run_nmap
-from reports.report_generator import generate_nmap_report, generate_redteam_report, generate_gobuster_report, generate_full_scan_report
+from reports.report_generator import (
+    generate_nmap_report, generate_redteam_report,
+    generate_gobuster_report, generate_full_scan_report,
+    generate_subdomain_report,
+)
 
 
 # ── Mode: nmap scan ───────────────────────────────────────────────────────────
@@ -364,6 +368,40 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
     ui.print_report_saved(path)
 
 
+# ── Mode: Subdomain Enumeration ──────────────────────────────────────────────
+
+def run_subdomain_mode(domain: str):
+    from tools.subdomain_tool import run_subdomain_enum
+    from security.validator import is_allowed_target
+
+    # Strip scheme if user pasted a URL
+    for prefix in ("https://", "http://"):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):].rstrip("/").split("/")[0]
+            ui.print_info(f"URL erkannt — verwende Domain: {domain}")
+            break
+
+    confirmed = False
+    if not is_allowed_target(domain):
+        if not ui.confirm_scan_target(domain):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    with ui.spinner(f"Enumerating subdomains for {domain} …") as prog:
+        task = prog.add_task(f"subdomain enum {domain}", total=None)
+        result = run_subdomain_enum(domain, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_subdomain_results(result)
+
+    if result.success:
+        path = generate_subdomain_report(result)
+        ui.print_report_saved(path)
+    else:
+        ui.print_error(result.error)
+
+
 # ── Interactive menu loop ─────────────────────────────────────────────────────
 
 def run_menu():
@@ -396,6 +434,12 @@ def run_menu():
                 wordlist = "wordlists/common.txt"
             if target_url:
                 run_gobuster_mode(target_url, wordlist=wordlist)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "subdomain":
+            domain = ui.prompt_target("Target domain (e.g. example.com)")
+            if domain:
+                run_subdomain_mode(domain)
                 input("\n  Press Enter to return to menu …")
 
         elif mode == "redteam":
@@ -439,6 +483,13 @@ if __name__ == "__main__":
             http_url = args[3]
         ui.print_banner()
         run_redteam_mode(args[1], mode=rt_mode, http_url=http_url)
+
+    elif args[0] == "subdomain":
+        if len(args) < 2:
+            ui.print_error("subdomain mode requires a domain. Example: python main.py subdomain example.com")
+            sys.exit(1)
+        ui.print_banner()
+        run_subdomain_mode(args[1])
 
     else:
         ui.print_error(f"Unknown mode: '{args[0]}'")
