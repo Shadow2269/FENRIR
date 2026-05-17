@@ -10,6 +10,7 @@ from reports.report_generator import (
     generate_nmap_report, generate_redteam_report,
     generate_gobuster_report, generate_full_scan_report,
     generate_subdomain_report, generate_takeover_report,
+    generate_cors_report,
 )
 
 
@@ -402,6 +403,37 @@ def run_subdomain_mode(domain: str):
         ui.print_error(result.error)
 
 
+# ── Mode: CORS Scanner ───────────────────────────────────────────────────────
+
+def run_cors_mode(url: str):
+    from tools.cors_scanner import scan_cors
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    # Ensure scheme present
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    ui.print_info(f"Testing 7 crafted origins against: {url}")
+
+    with ui.spinner(f"CORS scan {url} …") as prog:
+        task = prog.add_task("cors scan", total=None)
+        result = scan_cors(url, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_cors_results(result)
+    path = generate_cors_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Mode: Subdomain Takeover Check ───────────────────────────────────────────
 
 def run_takeover_mode(domain: str):
@@ -511,6 +543,12 @@ def run_menu():
                 run_takeover_mode(domain)
                 input("\n  Press Enter to return to menu …")
 
+        elif mode == "cors":
+            url = ui.prompt_target("Target URL (e.g. https://api.example.com/user)")
+            if url:
+                run_cors_mode(url)
+                input("\n  Press Enter to return to menu …")
+
         elif mode == "redteam":
             target_name, rt_mode, http_url = ui.prompt_redteam_target()
             if target_name:
@@ -566,6 +604,13 @@ if __name__ == "__main__":
             sys.exit(1)
         ui.print_banner()
         run_takeover_mode(args[1])
+
+    elif args[0] == "cors":
+        if len(args) < 2:
+            ui.print_error("cors mode requires a URL. Example: python main.py cors https://api.example.com/user")
+            sys.exit(1)
+        ui.print_banner()
+        run_cors_mode(args[1])
 
     else:
         ui.print_error(f"Unknown mode: '{args[0]}'")

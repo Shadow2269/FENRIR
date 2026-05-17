@@ -51,8 +51,9 @@ MENU_OPTIONS = [
     ("3", "gobuster",   "Dir Bruteforce",  "Find hidden paths on a web server"),
     ("4", "subdomain",  "Subdomain Enum",  "Enumerate subdomains via subfinder / amass / crt.sh"),
     ("5", "takeover",   "Takeover Check",  "Check subdomains for dangling CNAME takeover vulnerabilities"),
-    ("6", "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
-    ("7", "quit",       "Exit",            "Quit the program"),
+    ("6", "cors",       "CORS Scanner",    "Detect CORS misconfigurations (origin reflection, null, wildcard)"),
+    ("7", "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("8", "quit",       "Exit",            "Quit the program"),
 ]
 
 
@@ -418,6 +419,54 @@ def print_http_header_results(http_results: list):
 
         from rich.console import Group
         console.print(Panel(Group(*lines), title=title, border_style=border))
+
+
+def print_cors_results(result):
+    """Display CORS scan results."""
+    console.print()
+    console.print(Rule(f"[bold]CORS Scanner — {result.target}[/bold]", style="red"))
+
+    if not result.findings:
+        if result.error:
+            console.print(f"  [red]Error: {result.error}[/red]")
+        else:
+            console.print("  [dim green]No CORS misconfigurations detected.[/dim green]")
+        return
+
+    sev_color = {
+        "Critical": "bold red",
+        "High":     "bold yellow",
+        "Medium":   "yellow",
+        "Low":      "dim",
+    }
+    sev_icon = {
+        "Critical": "🔴",
+        "High":     "🟠",
+        "Medium":   "🟡",
+        "Low":      "🔵",
+    }
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Sev",         width=12)
+    table.add_column("Origin Sent", style="cyan",       ratio=2)
+    table.add_column("ACAO",        style="dim",         ratio=2)
+    table.add_column("ACAC",        width=8,  justify="center")
+    table.add_column("Detail",      style="dim",         ratio=3)
+
+    for f in result.findings:
+        icon  = sev_icon.get(f.severity, "")
+        style = sev_color.get(f.severity, "white")
+        acac_display = Text("true", style="bold red") if f.acac_header == "true" else Text(f.acac_header, style="dim")
+        table.add_row(
+            Text(f"{icon} {f.severity}", style=style),
+            f.origin_sent,
+            f.acao_header[:40],
+            acac_display,
+            f.detail[:70] + ("…" if len(f.detail) > 70 else ""),
+        )
+
+    border = "red" if result.has_critical else ("yellow" if result.has_high else "dim yellow")
+    console.print(Panel(table, title="[bold]CORS Findings[/bold]", border_style=border))
 
 
 def print_takeover_results(result):

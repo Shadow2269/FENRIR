@@ -895,6 +895,102 @@ def generate_gobuster_report(result) -> str:
     return filename
 
 
+# ── CORS Report ──────────────────────────────────────────────────────────────
+
+def generate_cors_report(result) -> str:
+    """Generate a PDF report from a CORSResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/cors_{safe}_{ts}.pdf"
+
+    sev_icon = {
+        "Critical": "🔴 CRITICAL",
+        "High":     "🟠 HIGH",
+        "Medium":   "🟡 MEDIUM",
+        "Low":      "🔵 LOW",
+        "None":     "🟢 NONE",
+    }.get(result.worst_severity, "🟢 NONE")
+
+    lines = [
+        "# CORS Misconfiguration Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**  | `{result.target}` |",
+        f"| **Status**      | {'Success' if result.success else 'Failed'} |",
+        f"| **Findings**    | {len(result.findings)} |",
+        f"| **Risk Level**  | {sev_icon} |",
+        f"| **Timestamp**   | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Findings",
+            "",
+            "| Severity | Origin Sent | ACAO Header | ACAC | Detail |",
+            "|---|---|---|---|---|",
+        ]
+        for f in result.findings:
+            sev_label = {
+                "Critical": "🔴 Critical",
+                "High":     "🟠 High",
+                "Medium":   "🟡 Medium",
+                "Low":      "🔵 Low",
+            }.get(f.severity, f.severity)
+            lines.append(
+                f"| {sev_label} | `{f.origin_sent}` | `{f.acao_header}` "
+                f"| {f.acac_header} | {f.detail[:100]}... |"
+            )
+        lines.append("")
+
+        lines += ["## Detailed Findings", ""]
+        for i, f in enumerate(result.findings, 1):
+            lines += [
+                f"### Finding {i} — {f.severity}",
+                "",
+                f"**Origin sent:** `{f.origin_sent}`  ",
+                f"**Access-Control-Allow-Origin:** `{f.acao_header}`  ",
+                f"**Access-Control-Allow-Credentials:** `{f.acac_header}`  ",
+                "",
+                f"**Impact:** {f.detail}",
+                "",
+            ]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- **Never reflect the `Origin` header directly** — maintain an explicit allowlist of trusted origins.",
+            "- **Never use `Access-Control-Allow-Origin: *` with `Allow-Credentials: true`** — browsers block it but it signals misconfiguration.",
+            "- **Reject the `null` origin** — it provides no meaningful security guarantee and is abusable via sandboxed iframes.",
+            "- Implement server-side allowlist validation:",
+            "",
+            "```python",
+            "ALLOWED_ORIGINS = {'https://app.yourdomain.com', 'https://admin.yourdomain.com'}",
+            "origin = request.headers.get('Origin', '')",
+            "if origin in ALLOWED_ORIGINS:",
+            "    response.headers['Access-Control-Allow-Origin'] = origin",
+            "    response.headers['Vary'] = 'Origin'",
+            "```",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No CORS misconfiguration detected. The server does not reflect",
+            "untrusted origins or does not include permissive CORS headers.",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
 # ── Takeover Report ──────────────────────────────────────────────────────────
 
 def generate_takeover_report(result) -> str:
