@@ -4,12 +4,38 @@ Subdomain enumeration via subfinder/amass (external tools) with crt.sh API fallb
 
 Priority: subfinder -> amass -> crt.sh
 """
+import os
 import shutil
 import subprocess
 import requests
+from pathlib import Path
 from dataclasses import dataclass, field
 from security.validator import validate_tool
 from logger import warn
+
+# Explicit fallback paths for Windows installs that may not be on PATH yet
+_SUBFINDER_PATHS = [
+    r"C:\Tools\subfinder.exe",
+    r"C:\Tools\subfinder",
+    str(Path.home() / "go" / "bin" / "subfinder.exe"),
+    str(Path.home() / "go" / "bin" / "subfinder"),
+]
+
+_AMASS_PATHS = [
+    r"C:\Tools\amass.exe",
+    r"C:\Tools\amass",
+    str(Path.home() / "go" / "bin" / "amass.exe"),
+]
+
+
+def _find_binary(name: str, extra_paths: list[str]) -> str | None:
+    found = shutil.which(name) or shutil.which(name + ".exe")
+    if found:
+        return found
+    for p in extra_paths:
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 @dataclass
@@ -63,12 +89,16 @@ def run_subdomain_enum(
     if result is not None:
         return result
 
-    warn("subfinder/amass not found — falling back to crt.sh passive lookup")
-    return _try_crtsh(domain)
+    warn("subfinder/amass not found — falling back to passive API lookup")
+    result = _try_crtsh(domain)
+    if not result.success:
+        warn("crt.sh failed — trying HackerTarget fallback")
+        result = _try_hackertarget(domain)
+    return result
 
 
 def _try_subfinder(domain: str, timeout: int) -> SubdomainResult | None:
-    bin_path = shutil.which("subfinder") or shutil.which("subfinder.exe")
+    bin_path = _find_binary("subfinder", _SUBFINDER_PATHS)
     if not bin_path:
         return None
     try:
@@ -94,7 +124,7 @@ def _try_subfinder(domain: str, timeout: int) -> SubdomainResult | None:
 
 
 def _try_amass(domain: str, timeout: int) -> SubdomainResult | None:
-    bin_path = shutil.which("amass") or shutil.which("amass.exe")
+    bin_path = _find_binary("amass", _AMASS_PATHS)
     if not bin_path:
         return None
     try:
@@ -121,33 +151,75 @@ def _try_amass(domain: str, timeout: int) -> SubdomainResult | None:
 
 def _try_crtsh(domain: str) -> SubdomainResult:
     url = f"https://crt.sh/?q=%.{domain}&output=json"
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                url,
+                timeout=15,
+                headers={"Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            raw: list[str] = []
+            for entry in data:
+                for line in entry.get("name_value", "").splitlines():
+                    raw.append(line.strip().lstrip("*."))
+
+            subdomains = _clean([s for s in raw if s.endswith(f".{domain}") or s == domain])
+            return SubdomainResult(
+                success=True,
+                target=domain,
+                subdomains=subdomains,
+                source="crt.sh",
+            )
+        except Exception as exc:
+            if attempt == 0:
+                warn(f"crt.sh attempt 1 failed ({exc}) — retrying …")
+            else:
+                return SubdomainResult(
+                    success=False,
+                    target=domain,
+                    error=f"crt.sh failed after 2 attempts: {exc}",
+                    source="crt.sh",
+                )
+    return SubdomainResult(success=False, target=domain, error="crt.sh unreachable", source="crt.sh")
+
+
+def _try_hackertarget(domain: str) -> SubdomainResult:
+    """HackerTarget free API — no key needed, returns plain-text subdomain list."""
+    url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
     try:
-        resp = requests.get(
-            url,
-            timeout=30,
-            headers={"Accept": "application/json"},
-        )
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-
-        raw: list[str] = []
-        for entry in data:
-            for line in entry.get("name_value", "").splitlines():
-                raw.append(line.strip().lstrip("*."))
-
-        subdomains = _clean([s for s in raw if s.endswith(f".{domain}") or s == domain])
+        lines = resp.text.strip().splitlines()
+        # Format: subdomain,ip
+        subdomains = []
+        for line in lines:
+            if "," in line:
+                sub = line.split(",")[0].strip().lower()
+                if sub.endswith(domain):
+                    subdomains.append(sub)
+        subdomains = _clean(subdomains)
+        if "error" in resp.text.lower() and not subdomains:
+            return SubdomainResult(
+                success=False,
+                target=domain,
+                error=f"HackerTarget: {resp.text[:80]}",
+                source="hackertarget",
+            )
         return SubdomainResult(
             success=True,
             target=domain,
             subdomains=subdomains,
-            source="crt.sh",
+            source="hackertarget",
         )
     except Exception as exc:
         return SubdomainResult(
             success=False,
             target=domain,
-            error=f"crt.sh lookup failed: {exc}",
-            source="crt.sh",
+            error=f"HackerTarget failed: {exc}",
+            source="hackertarget",
         )
 
 
