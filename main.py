@@ -11,7 +11,7 @@ from reports.report_generator import (
     generate_gobuster_report, generate_full_scan_report,
     generate_subdomain_report, generate_takeover_report,
     generate_cors_report, generate_redirect_report,
-    generate_xss_report,
+    generate_xss_report, generate_sqli_report,
 )
 
 
@@ -498,6 +498,40 @@ def run_takeover_mode(domain: str):
     ui.print_report_saved(path)
 
 
+# ── Mode: SQLi Tester ────────────────────────────────────────────────────────
+
+def run_sqli_mode(url: str):
+    from tools.sqli_tester import scan_sqli, _ERROR_PAYLOADS, _BOOL_TRUE, _extract_params
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    params = _extract_params(url) or {"id": ["1"]}
+    ui.print_info(
+        f"Testing {len(params)} parameter(s) — "
+        f"{len(_ERROR_PAYLOADS)} error payloads + {len(_BOOL_TRUE)} boolean probes each"
+    )
+
+    with ui.spinner(f"SQLi scan {url} …") as prog:
+        task = prog.add_task("sqli scan", total=None)
+        result = scan_sqli(url, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_sqli_results(result)
+    path = generate_sqli_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Mode: XSS Scanner ────────────────────────────────────────────────────────
 
 def run_xss_mode(url: str):
@@ -629,6 +663,12 @@ def run_menu():
                 run_xss_mode(url)
                 input("\n  Press Enter to return to menu …")
 
+        elif mode == "sqli":
+            url = ui.prompt_target("Target URL with params (e.g. http://target.com/items?id=1)")
+            if url:
+                run_sqli_mode(url)
+                input("\n  Press Enter to return to menu …")
+
         elif mode == "redteam":
             target_name, rt_mode, http_url = ui.prompt_redteam_target()
             if target_name:
@@ -705,6 +745,13 @@ if __name__ == "__main__":
             sys.exit(1)
         ui.print_banner()
         run_xss_mode(args[1])
+
+    elif args[0] == "sqli":
+        if len(args) < 2:
+            ui.print_error("sqli mode requires a URL. Example: python main.py sqli http://target.com/items?id=1")
+            sys.exit(1)
+        ui.print_banner()
+        run_sqli_mode(args[1])
 
     else:
         ui.print_error(f"Unknown mode: '{args[0]}'")

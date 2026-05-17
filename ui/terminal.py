@@ -54,7 +54,8 @@ MENU_OPTIONS = [
     ("6", "cors",       "CORS Scanner",    "Detect CORS misconfigurations (origin reflection, null, wildcard)"),
     ("7", "redirect",   "Open Redirect",   "Test URL parameters for open redirect vulnerabilities"),
     ("8", "xss",       "XSS Scanner",     "Inject XSS payloads into URL parameters and detect reflection"),
-    ("9", "redteam",   "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("9", "sqli",      "SQLi Tester",     "Test URL parameters for SQL injection (error + boolean based)"),
+    ("r", "redteam",   "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
     ("0", "quit",      "Exit",            "Quit the program"),
 ]
 
@@ -539,6 +540,52 @@ def print_subdomain_results(result):
     console.print(Panel(table,
                         title=f"[bold]All Subdomains ({result.count})[/bold]",
                         border_style="dim red"))
+
+
+def print_sqli_results(result):
+    """Display SQL injection scan results."""
+    console.print()
+    console.print(Rule(f"[bold]SQL Injection Tester — {result.target}[/bold]", style="red"))
+
+    if not result.findings:
+        if result.error:
+            console.print(f"  [red]Error: {result.error}[/red]")
+        else:
+            console.print("  [dim green]No SQL injection indicators detected.[/dim green]")
+        return
+
+    high = result.high_confidence
+    console.print(
+        f"  High-confidence: [bold red]{len(high)}[/bold red]  |  "
+        f"Total findings: [bold white]{len(result.findings)}[/bold white]"
+    )
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Conf",      width=12)
+    table.add_column("Parameter", style="cyan bold", width=14)
+    table.add_column("DB Hint",   style="dim",        width=14)
+    table.add_column("Detail",    style="dim",         ratio=3)
+
+    conf_style = {"High": "bold red", "Medium": "bold yellow"}
+    conf_icon  = {"High": "🔴", "Medium": "🟡"}
+
+    for f in result.findings:
+        style = conf_style.get(f.confidence, "white")
+        icon  = conf_icon.get(f.confidence, "")
+        detail_trunc = f.detail[:80] + ("…" if len(f.detail) > 80 else "")
+        table.add_row(
+            Text(f"{icon} {f.confidence}", style=style),
+            f.parameter,
+            f.db_type_hint,
+            detail_trunc,
+        )
+
+    border = "red" if high else "yellow"
+    console.print(Panel(
+        table,
+        title=f"[bold red]SQLi Findings ({len(result.findings)})[/bold red]",
+        border_style=border,
+    ))
 
 
 def print_xss_results(result):

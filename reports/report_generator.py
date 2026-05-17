@@ -1141,6 +1141,109 @@ def generate_subdomain_report(result) -> str:
     return filename
 
 
+# ── SQLi Report ──────────────────────────────────────────────────────────────
+
+def generate_sqli_report(result) -> str:
+    """Generate a PDF report from a SQLiResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/sqli_{safe}_{ts}.pdf"
+
+    high = result.high_confidence
+    risk = (
+        "🔴 CRITICAL" if high else
+        "🟡 MEDIUM"   if result.has_findings else
+        "🟢 NONE"
+    )
+
+    lines = [
+        "# SQL Injection Scan Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**        | `{result.target}` |",
+        f"| **Status**            | {'Success' if result.success else 'Failed'} |",
+        f"| **High Confidence**   | {len(high)} |",
+        f"| **Total Findings**    | {len(result.findings)} |",
+        f"| **Risk Level**        | {risk} |",
+        f"| **Timestamp**         | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Findings",
+            "",
+            "| Confidence | Parameter | DB Hint | Detail |",
+            "|---|---|---|---|",
+        ]
+        for f in result.findings:
+            conf_icon = "🔴 High" if f.confidence == "High" else "🟡 Medium"
+            lines.append(
+                f"| {conf_icon} | `{f.parameter}` | {f.db_type_hint} | {f.detail[:100]}... |"
+            )
+        lines.append("")
+
+        lines += ["## Detailed Findings", ""]
+        for i, f in enumerate(result.findings, 1):
+            lines += [
+                f"### Finding {i} — Parameter `{f.parameter}` ({f.confidence} Confidence)",
+                "",
+                f"**Payload:** `{f.payload}`  ",
+                f"**Database hint:** {f.db_type_hint}  ",
+                f"**Confidence:** {f.confidence}  ",
+                "",
+                f"**Detail:** {f.detail}",
+                "",
+                "**Impact:** SQL injection can allow an attacker to read arbitrary database "
+                "records, bypass authentication, modify or delete data, and in some "
+                "configurations achieve remote code execution on the database server.",
+                "",
+            ]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- **Use parameterized queries / prepared statements** for all database "
+            "interactions — never concatenate user input into SQL strings.",
+            "- **Apply an ORM** (SQLAlchemy, Django ORM, Hibernate) which uses safe "
+            "query building by default.",
+            "- **Principle of least privilege** — the database account used by the "
+            "application should have only the permissions it needs (no DROP, no admin).",
+            "- **Input validation** — reject or sanitize values that contain SQL metacharacters "
+            "(`'`, `\"`, `;`, `--`, `/*`) as a defence-in-depth measure.",
+            "",
+            "Example (Python / parameterized):",
+            "",
+            "```python",
+            "# VULNERABLE",
+            "cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")",
+            "",
+            "# SAFE",
+            "cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))",
+            "```",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No SQL injection indicators detected in the tested parameters.",
+            "",
+            "_Note: This scan covers error-based and boolean-based detection via GET_",
+            "_parameters. Blind time-based, out-of-band, and POST-body injection_",
+            "_require additional manual testing._",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
 # ── XSS Report ───────────────────────────────────────────────────────────────
 
 def generate_xss_report(result) -> str:
