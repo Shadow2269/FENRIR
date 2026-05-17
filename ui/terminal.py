@@ -31,7 +31,7 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v1.0.6", style="bold white")
+    banner.append("  v1.1.0", style="bold white")
 
     console.print(Panel(
         banner,
@@ -50,8 +50,9 @@ MENU_OPTIONS = [
     ("2", "nmap",       "Nmap Scan",       "Scan a target for open ports, services and CVEs"),
     ("3", "gobuster",   "Dir Bruteforce",  "Find hidden paths on a web server"),
     ("4", "subdomain",  "Subdomain Enum",  "Enumerate subdomains via subfinder / amass / crt.sh"),
-    ("5", "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
-    ("6", "quit",       "Exit",            "Quit the program"),
+    ("5", "takeover",   "Takeover Check",  "Check subdomains for dangling CNAME takeover vulnerabilities"),
+    ("6", "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("7", "quit",       "Exit",            "Quit the program"),
 ]
 
 
@@ -417,6 +418,41 @@ def print_http_header_results(http_results: list):
 
         from rich.console import Group
         console.print(Panel(Group(*lines), title=title, border_style=border))
+
+
+def print_takeover_results(result):
+    """Display subdomain takeover check results."""
+    console.print()
+    console.print(Rule(f"[bold]Subdomain Takeover Check — {result.target}[/bold]", style="red"))
+    console.print(
+        f"  Checked: [bold white]{result.checked}[/bold white] subdomain(s)  |  "
+        f"Vulnerable: [bold {'red' if result.has_findings else 'green'}]{len(result.vulnerable)}[/bold {'red' if result.has_findings else 'green'}]"
+    )
+
+    if not result.vulnerable:
+        console.print("  [dim green]No takeover vulnerabilities detected.[/dim green]")
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Conf",      width=8)
+    table.add_column("Subdomain", style="bold cyan",   ratio=2)
+    table.add_column("CNAME",     style="dim",          ratio=2)
+    table.add_column("Service",   style="bold white",   width=18)
+    table.add_column("Indicator", style="dim",          ratio=2)
+
+    for f in result.vulnerable:
+        conf_style = "bold red" if f.confidence == "High" else "bold yellow"
+        icon = "🔴" if f.confidence == "High" else "🟠"
+        table.add_row(
+            Text(f"{icon} {f.confidence}", style=conf_style),
+            f.subdomain,
+            f.cname,
+            f.service,
+            f.indicator[:50] + ("…" if len(f.indicator) > 50 else ""),
+        )
+
+    border = "red" if result.high_confidence else "yellow"
+    console.print(Panel(table, title="[bold red]Vulnerable Subdomains[/bold red]", border_style=border))
 
 
 def print_subdomain_results(result):

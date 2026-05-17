@@ -895,6 +895,85 @@ def generate_gobuster_report(result) -> str:
     return filename
 
 
+# ── Takeover Report ──────────────────────────────────────────────────────────
+
+def generate_takeover_report(result) -> str:
+    """Generate a PDF report from a TakeoverResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace(".", "_")
+    filename = f"{REPORT_DIR}/takeover_{safe}_{ts}.pdf"
+
+    status_icon = "✅" if result.success else "❌"
+    risk = "🔴 CRITICAL" if result.high_confidence else ("🟠 HIGH" if result.has_findings else "🟢 NONE")
+
+    lines = [
+        "# Subdomain Takeover Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target**           | `{result.target}` |",
+        f"| **Status**           | {status_icon} {'Success' if result.success else 'Failed'} |",
+        f"| **Subdomains Checked** | {result.checked} |",
+        f"| **Vulnerable**       | {len(result.vulnerable)} |",
+        f"| **Risk Level**       | {risk} |",
+        f"| **Timestamp**        | {ts} |",
+        "",
+    ]
+
+    if result.vulnerable:
+        lines += [
+            "## Vulnerable Subdomains",
+            "",
+            "> These subdomains have dangling CNAME records pointing to unclaimed",
+            "> external services. An attacker can register the service and serve",
+            "> arbitrary content under your domain.",
+            "",
+            "| Confidence | Subdomain | CNAME Target | Service | Indicator |",
+            "|---|---|---|---|---|",
+        ]
+        for f in result.vulnerable:
+            conf_icon = "🔴" if f.confidence == "High" else "🟠"
+            lines.append(
+                f"| {conf_icon} {f.confidence} | `{f.subdomain}` "
+                f"| `{f.cname}` | {f.service} | {f.indicator[:60]} |"
+            )
+        lines += [
+            "",
+            "## Remediation",
+            "",
+            "For each vulnerable subdomain, choose one of:",
+            "",
+            "1. **Remove the DNS record** — if the subdomain is no longer needed, "
+               "delete the CNAME entry from your DNS provider.",
+            "2. **Reclaim the service** — create a new account/repository/bucket on "
+               "the target platform and point it to this subdomain.",
+            "3. **Replace with a redirect** — point the subdomain to an active service "
+               "to close the window of opportunity.",
+            "",
+            "**Priority:** Fix High-confidence findings within 24 hours — they are "
+            "confirmed exploitable and can be discovered by automated scanners.",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            f"No subdomain takeover vulnerabilities detected across "
+            f"{result.checked} subdomain(s).",
+            "",
+            "_Note: This check covers known fingerprints. New or custom services may_",
+            "_not be detected. Manual review of unusual CNAME targets is recommended._",
+            "",
+        ]
+
+    if result.error:
+        lines += ["## Errors", "", f"> {result.error}", ""]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
 # ── Subdomain Report ─────────────────────────────────────────────────────────
 
 def generate_subdomain_report(result) -> str:

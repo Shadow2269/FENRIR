@@ -9,7 +9,7 @@ from tools.nmap_tool import run_nmap
 from reports.report_generator import (
     generate_nmap_report, generate_redteam_report,
     generate_gobuster_report, generate_full_scan_report,
-    generate_subdomain_report,
+    generate_subdomain_report, generate_takeover_report,
 )
 
 
@@ -402,6 +402,69 @@ def run_subdomain_mode(domain: str):
         ui.print_error(result.error)
 
 
+# ── Mode: Subdomain Takeover Check ───────────────────────────────────────────
+
+def run_takeover_mode(domain: str):
+    from tools.subdomain_tool import run_subdomain_enum
+    from tools.takeover_checker import check_takeover
+    from security.validator import is_allowed_target
+
+    for prefix in ("https://", "http://"):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):].rstrip("/").split("/")[0]
+
+    confirmed = False
+    if not is_allowed_target(domain):
+        if not ui.confirm_scan_target(domain):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    # Step 1: enumerate subdomains
+    ui.print_info(f"Step 1/2 — Enumerating subdomains for {domain} …")
+    with ui.spinner(f"Subdomain enum {domain} …") as prog:
+        task = prog.add_task("subdomain enum", total=None)
+        sub_result = run_subdomain_enum(domain, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    if not sub_result.subdomains:
+        ui.print_info("No subdomains found — nothing to check for takeover.")
+        return
+
+    ui.print_info(f"{sub_result.count} subdomain(s) found via {sub_result.source}")
+
+    # Step 2: check each for takeover
+    ui.print_info(f"Step 2/2 — Checking {sub_result.count} subdomain(s) for takeover …")
+    with ui.ScanProgress(total=sub_result.count, label="Takeover Check") as prog:
+        from tools.takeover_checker import (
+            TakeoverResult, TakeoverFinding,
+            _resolve_cname, _match_fingerprint, _confirm_via_http,
+        )
+        result = TakeoverResult(success=True, target=domain)
+        for subdomain in sub_result.subdomains:
+            prog.advance(subdomain)
+            result.checked += 1
+            cname = _resolve_cname(subdomain)
+            if not cname:
+                continue
+            match = _match_fingerprint(cname)
+            if not match:
+                continue
+            service, indicator, confidence = match
+            if _confirm_via_http(subdomain, indicator):
+                result.vulnerable.append(TakeoverFinding(
+                    subdomain=subdomain,
+                    cname=cname,
+                    service=service,
+                    indicator=indicator,
+                    confidence=confidence,
+                ))
+
+    ui.print_takeover_results(result)
+    path = generate_takeover_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Interactive menu loop ─────────────────────────────────────────────────────
 
 def run_menu():
@@ -440,6 +503,12 @@ def run_menu():
             domain = ui.prompt_target("Target domain (e.g. example.com)")
             if domain:
                 run_subdomain_mode(domain)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "takeover":
+            domain = ui.prompt_target("Target domain (e.g. example.com)")
+            if domain:
+                run_takeover_mode(domain)
                 input("\n  Press Enter to return to menu …")
 
         elif mode == "redteam":
@@ -490,6 +559,13 @@ if __name__ == "__main__":
             sys.exit(1)
         ui.print_banner()
         run_subdomain_mode(args[1])
+
+    elif args[0] == "takeover":
+        if len(args) < 2:
+            ui.print_error("takeover mode requires a domain. Example: python main.py takeover example.com")
+            sys.exit(1)
+        ui.print_banner()
+        run_takeover_mode(args[1])
 
     else:
         ui.print_error(f"Unknown mode: '{args[0]}'")
