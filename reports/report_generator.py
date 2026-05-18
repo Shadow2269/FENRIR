@@ -344,12 +344,23 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
             svc_label  = f"{svc_result.product} {svc_result.version}".strip() or svc_result.service
 
             if not svc_result.cves:
-                lines += [
-                    f"### 🟢 {port_label} — {svc_label}",
-                    "",
-                    "_No CVEs found._",
-                    "",
-                ]
+                if not svc_result.version:
+                    lines += [
+                        f"### ⚪ {port_label} — {svc_label}",
+                        "",
+                        "> ⚠ **Version hidden by server** — CVE lookup skipped. The server is configured "
+                        "to suppress its version string (`ServerTokens Prod` / `server_tokens off`). "
+                        "Run `nmap -sV --version-intensity 9 --script=banner` or check "
+                        "the HTTP `Server:` response header manually to determine the exact version.",
+                        "",
+                    ]
+                else:
+                    lines += [
+                        f"### 🟢 {port_label} — {svc_label}",
+                        "",
+                        "_No CVEs found for this version._",
+                        "",
+                    ]
                 continue
 
             verified   = svc_result.verified_cves
@@ -1796,6 +1807,15 @@ def generate_full_scan_report(full_result: dict) -> str:
         lines += ["### CVE Analysis", ""]
         for svc in cve_results:
             if not svc.cves:
+                if not svc.version:
+                    lines += [
+                        f"#### ⚪ Port {svc.port}/{svc.protocol} — {svc.product}",
+                        "",
+                        "> **Version hidden** — server suppresses its version string. "
+                        "Run `nmap -sV --version-intensity 9 --script=banner` or check "
+                        "the `Server:` header to identify the exact version.",
+                        "",
+                    ]
                 continue
             verified   = svc.verified_cves
             unverified = svc.unverified_cves

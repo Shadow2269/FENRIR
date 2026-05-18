@@ -236,7 +236,21 @@ def print_cve_results(cve_results: list):
         title = f"{icon}  Port [bold]{svc.port}/{svc.protocol}[/bold] — {label}{uv_note}"
 
         if not svc.cves:
-            console.print(Panel("[dim]No CVEs found.[/dim]", title=title, border_style="dim"))
+            if not svc.version:
+                msg = (
+                    "[dim yellow]Version hidden by server — CVE lookup skipped.[/dim yellow]\n"
+                    "[dim]Run [bold]nmap -sV --version-intensity 9 --script=banner[/bold] "
+                    "or check the [bold]Server:[/bold] HTTP header to identify the version.[/dim]"
+                )
+                console.print(Panel(msg, title=f"⚪  Port [bold]{svc.port}/{svc.protocol}[/bold] — {svc.product}", border_style="dim"))
+            elif getattr(svc, "version_is_estimate", False):
+                msg = (
+                    f"[dim yellow]Version estimate [bold]{svc.version}[/bold] (behavioral fingerprint) — "
+                    f"no CVEs matched this version range.[/dim yellow]"
+                )
+                console.print(Panel(msg, title=title, border_style="dim yellow"))
+            else:
+                console.print(Panel("[dim green]No CVEs found for this version.[/dim green]", title=title, border_style="dim green"))
             continue
 
         table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
@@ -338,6 +352,16 @@ def confirm_gobuster() -> bool:
     return Confirm.ask(
         "  [dim]Include directory scan (Gobuster)?[/dim] [dim](slower, but finds hidden paths)[/dim]",
         default=False,
+    )
+
+
+def confirm_nmap_rescan(ports: list[int]) -> bool:
+    """Ask whether to re-run nmap with --script=banner on ports that still have no version."""
+    port_str = ", ".join(str(p) for p in ports)
+    return Confirm.ask(
+        f"\n  [yellow]⚠ Ports [bold]{port_str}[/bold] — version still unknown after active probing.\n"
+        f"  Re-scan with [bold]nmap --script=banner[/bold] for deeper detection?[/yellow]",
+        default=True,
     )
 
 

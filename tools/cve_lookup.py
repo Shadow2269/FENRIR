@@ -4,10 +4,12 @@ Queries the NVD (National Vulnerability Database) API for CVEs
 based on software names and versions found in an nmap scan.
 
 Lookup strategy (per service):
-  1. CPE dictionary lookup  → get vendor:product CPE for exact matching
-  2. CVE query via cpeName  → returns CVEs with version-range metadata
-  3. Version-range filter   → discard CVEs that don't affect the scanned version
-  4. Keyword fallback       → used when CPE lookup yields nothing
+  1. Known CPE map  → hardcoded product→CPE for the 40+ most common nmap products
+  2. CPE dict API   → fuzzy lookup for unknown products (requires ≥2 token overlap)
+  3. CVE query      → fetch CVEs via CPE with version-range metadata
+  4. Version filter → discard CVEs whose affected range excludes the scanned version
+  5. Confidence tag → "verified" if range data confirmed, "unverified" if not
+  6. Keyword fallback → last resort when CPE lookup fails (all results = unverified)
 """
 
 import re
@@ -27,6 +29,82 @@ except ImportError:
 NVD_CVE_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_CPE_API_URL = "https://services.nvd.nist.gov/rest/json/cpes/2.0"
 REQUEST_DELAY = 6.5   # seconds between requests (safe under the 5/30s limit)
+
+# ── Known product → NVD CPE base map ─────────────────────────────────────────
+# Keys are lowercase nmap product strings (or substrings thereof).
+# Values are the authoritative NVD CPE 2.3 base (no version field).
+# When matched, the API CPE-dictionary call is skipped entirely → faster,
+# no rate-limit hit, and the correct CPE is guaranteed.
+_KNOWN_CPE_MAP: dict[str, str] = {
+    # Web servers
+    "nginx":                          "cpe:2.3:a:nginx:nginx",
+    "apache httpd":                   "cpe:2.3:a:apache:http_server",
+    "apache":                         "cpe:2.3:a:apache:http_server",
+    "lighttpd":                       "cpe:2.3:a:lighttpd:lighttpd",
+    "microsoft iis":                  "cpe:2.3:a:microsoft:internet_information_services",
+    "iis":                            "cpe:2.3:a:microsoft:internet_information_services",
+    # SSH / TLS
+    "openssh":                        "cpe:2.3:a:openbsd:openssh",
+    "openssl":                        "cpe:2.3:a:openssl:openssl",
+    "libssl":                         "cpe:2.3:a:openssl:openssl",
+    # FTP
+    "vsftpd":                         "cpe:2.3:a:beasts:vsftpd",
+    "proftpd":                        "cpe:2.3:a:proftpd:proftpd",
+    "pure-ftpd":                      "cpe:2.3:a:pureftpd:pure-ftpd",
+    "filezilla":                      "cpe:2.3:a:filezilla-project:filezilla_server",
+    # Mail
+    "exim":                           "cpe:2.3:a:exim:exim",
+    "postfix":                        "cpe:2.3:a:wietse_venema:postfix",
+    "sendmail":                       "cpe:2.3:a:sendmail:sendmail",
+    "dovecot":                        "cpe:2.3:a:dovecot:dovecot",
+    # Databases
+    "mysql":                          "cpe:2.3:a:mysql:mysql",
+    "mariadb":                        "cpe:2.3:a:mariadb:mariadb",
+    "postgresql":                     "cpe:2.3:a:postgresql:postgresql",
+    "redis":                          "cpe:2.3:a:redis:redis",
+    "mongodb":                        "cpe:2.3:a:mongodb:mongodb",
+    "elasticsearch":                  "cpe:2.3:a:elastic:elasticsearch",
+    "memcached":                      "cpe:2.3:a:memcached:memcached",
+    "couchdb":                        "cpe:2.3:a:apache:couchdb",
+    # App servers / runtimes
+    "apache tomcat":                  "cpe:2.3:a:apache:tomcat",
+    "tomcat":                         "cpe:2.3:a:apache:tomcat",
+    "jetty":                          "cpe:2.3:a:eclipse:jetty",
+    "jboss":                          "cpe:2.3:a:redhat:jboss_enterprise_application_platform",
+    "wildfly":                        "cpe:2.3:a:redhat:wildfly",
+    "php":                            "cpe:2.3:a:php:php",
+    "node.js":                        "cpe:2.3:a:nodejs:node.js",
+    "nodejs":                         "cpe:2.3:a:nodejs:node.js",
+    # CMS
+    "wordpress":                      "cpe:2.3:a:wordpress:wordpress",
+    "drupal":                         "cpe:2.3:a:drupal:drupal",
+    "joomla":                         "cpe:2.3:a:joomla:joomla",
+    # DNS
+    "bind":                           "cpe:2.3:a:isc:bind",
+    "named":                          "cpe:2.3:a:isc:bind",
+    "unbound":                        "cpe:2.3:a:nlnetlabs:unbound",
+    "powerdns":                       "cpe:2.3:a:powerdns:authoritative",
+    # Proxy / network
+    "squid":                          "cpe:2.3:a:squid-cache:squid",
+    "haproxy":                        "cpe:2.3:a:haproxy:haproxy",
+    "varnish":                        "cpe:2.3:a:varnish_cache_project:varnish_cache",
+    # SMB / Windows
+    "samba":                          "cpe:2.3:a:samba:samba",
+    # VPN / remote
+    "openvpn":                        "cpe:2.3:a:openvpn:openvpn",
+    "openconnect":                    "cpe:2.3:a:infradead:openconnect",
+    # Misc
+    "zookeeper":                      "cpe:2.3:a:apache:zookeeper",
+    "rabbitmq":                       "cpe:2.3:a:pivotal_software:rabbitmq",
+    "kafka":                          "cpe:2.3:a:apache:kafka",
+}
+
+# Suffixes nmap appends after the version that must be stripped before comparison
+_OS_SUFFIX_RE = re.compile(
+    r"\s+(Ubuntu|Debian|Fedora|CentOS|RHEL|Red\s*Hat|Alpine|Arch|Gentoo|Kali|Raspbian)"
+    r"[\w/.+-]*",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -49,6 +127,7 @@ class ServiceCVEResult:
     product: str
     version: str
     cves: list[CVEEntry] = field(default_factory=list)
+    version_is_estimate: bool = False  # True when version came from behavioral fingerprinting
 
     @property
     def max_cvss(self) -> float:
@@ -101,8 +180,15 @@ def parse_nmap_services(nmap_output: str) -> list[dict]:
 
 
 def _split_product_version(text: str) -> tuple[str, str]:
-    """Split 'Apache httpd 2.4.49 ((Unix))' into ('Apache httpd', '2.4.49')."""
-    text = re.sub(r"\(.*?\)", "", text).strip()
+    """Split 'Apache httpd 2.4.49 ((Unix))' into ('Apache httpd', '2.4.49').
+
+    Also strips OS/distro suffixes nmap appends after the version, e.g.:
+      'OpenSSH 8.2p1 Ubuntu 4ubuntu0.5 (Ubuntu Linux; protocol 2.0)'
+      → product='OpenSSH', version='8.2p1'
+    """
+    text = re.sub(r"\(.*?\)", "", text)   # strip (Ubuntu), ((Unix)), etc.
+    text = _OS_SUFFIX_RE.sub("", text)    # strip bare 'Ubuntu 4ubuntu0.5' etc.
+    text = text.strip()
     version_match = re.search(r"\b(\d[\d.]+\w*)\b", text)
     if version_match:
         version = version_match.group(1)
@@ -236,15 +322,32 @@ def _api_get(url: str, params: dict, api_key: str) -> Optional[dict]:
 
 def _find_cpe_base(product: str, api_key: str) -> Optional[str]:
     """
-    Query NVD CPE dictionary for *product* and return the best-matching
-    base CPE string like 'cpe:2.3:a:apache:http_server' (no version part).
-    Returns None when no confident match is found.
+    Return the NVD CPE 2.3 base string for *product* (no version field).
+
+    Strategy:
+      1. Check _KNOWN_CPE_MAP by exact lowercase key — no API call, guaranteed correct.
+      2. Check _KNOWN_CPE_MAP by substring — handles 'nginx http server' → nginx entry.
+      3. Fall back to NVD CPE dictionary API with fuzzy token scoring.
     """
+    key = product.lower().strip()
+
+    # 1. Exact match
+    if key in _KNOWN_CPE_MAP:
+        log(f"    CPE: known map hit for '{product}'")
+        return _KNOWN_CPE_MAP[key]
+
+    # 2. Substring match (e.g. nmap reports 'nginx http server' → key 'nginx' is in it)
+    for known_key, cpe in _KNOWN_CPE_MAP.items():
+        if known_key in key:
+            log(f"    CPE: known map partial hit '{known_key}' for '{product}'")
+            return cpe
+
+    # 3. NVD CPE dictionary API (costs one REQUEST_DELAY sleep)
     data = _api_get(NVD_CPE_API_URL, {"keywordSearch": product, "resultsPerPage": 10}, api_key)
     if not data:
         return None
 
-    product_tokens = set(re.findall(r"\w+", product.lower()))
+    product_tokens = set(re.findall(r"\w+", key))
     best_cpe: Optional[str] = None
     best_score = 0
 
@@ -264,7 +367,8 @@ def _find_cpe_base(product: str, api_key: str) -> Optional[str]:
             best_score = score
             best_cpe = f"cpe:2.3:a:{parts[3]}:{parts[4]}"
 
-    return best_cpe if best_score > 0 else None
+    # Require at least 2 matching tokens to avoid wrong CPE assignments
+    return best_cpe if best_score >= 2 else None
 
 
 # ── CVE fetchers ──────────────────────────────────────────────────────────────
@@ -349,12 +453,15 @@ def lookup_cves(
       Phase 1 — CPE-based:  find base CPE → query CVEs → filter by version range
       Phase 2 — Keyword:    fallback full-text search  → filter by version range
 
-    The version-range filter discards CVEs whose affected range does not include
-    the scanned version. When range data is absent, the CVE is included
-    conservatively (could still be relevant).
+    Returns an empty list when *version* is unknown — without a version we cannot
+    determine which CVEs apply, so any result would be an unverifiable false positive.
 
-    Returns up to *max_results* entries sorted by CVSS score descending.
+    Returns up to *max_results* entries sorted by verified first, then CVSS descending.
     """
+    if not version:
+        warn(f"    Skipping CVE lookup for '{product}' — no version number detected.")
+        return []
+
     raw_items: list[dict] = []
     used_cpe = False
 
@@ -433,11 +540,26 @@ def run_cve_lookup(
     log(f"CVE lookup: found {len(services)} service(s) — querying NVD API …")
     results = []
 
+    no_version_count = 0
     for svc in services:
-        keyword = f"{svc['product']} {svc['version']}".strip()
-        if not keyword:
+        if not svc["product"]:
             continue
 
+        if not svc["version"]:
+            warn(f"  [{svc['port']}/{svc['protocol']}] {svc['product']} — "
+                 "version hidden by server, CVE lookup skipped")
+            no_version_count += 1
+            results.append(ServiceCVEResult(
+                port=svc["port"],
+                protocol=svc["protocol"],
+                service=svc["service"],
+                product=svc["product"],
+                version="",
+                cves=[],
+            ))
+            continue
+
+        keyword = f"{svc['product']} {svc['version']}".strip()
         log(f"  [{svc['port']}/{svc['protocol']}] {keyword}")
         cves = lookup_cves(
             keyword=keyword,
@@ -457,5 +579,7 @@ def run_cve_lookup(
         ))
 
     total_cves = sum(len(r.cves) for r in results)
-    log(f"CVE lookup complete — {total_cves} CVE(s) across {len(results)} service(s)")
+    if no_version_count:
+        warn(f"{no_version_count} service(s) had no version — CVE lookup skipped for those.")
+    log(f"CVE lookup complete — {total_cves} CVE(s) across {len(results) - no_version_count} service(s)")
     return results

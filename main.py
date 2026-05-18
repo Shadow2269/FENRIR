@@ -275,7 +275,7 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
         confirmed = True
 
     include_gobuster = ui.confirm_gobuster()
-    total_steps = 5 if include_gobuster else 4
+    total_steps = 6 if include_gobuster else 5
 
     full_result = {
         "target":          target,
@@ -290,7 +290,7 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
     ui.print_scan_step(1, total_steps, f"Nmap Service Scan — {target}")
     with ui.spinner(f"Scanning {target} …") as prog:
         task = prog.add_task("nmap -sV ...", total=None)
-        nmap_result = run_nmap(target, flags=["-sV"], confirmed=confirmed, timeout=180)
+        nmap_result = run_nmap(target, flags=["-sV", "--version-intensity", "9"], confirmed=confirmed, timeout=180)
         prog.update(task, completed=True)
 
     full_result["nmap_result"] = nmap_result
@@ -301,50 +301,115 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
         return
 
     services = parse_nmap_services(nmap_result["output"])
-    ui.print_info(f"{len(services)} versioned service(s) found")
+    ui.print_info(f"{len(services)} service(s) found")
 
-    # ── Step 2: CVE Lookup ────────────────────────────────────────────────────
-    ui.print_scan_step(2, total_steps, f"CVE Lookup ({len(services)} service(s))")
+    # ── Step 2: Version Enrichment ────────────────────────────────────────────
+    ui.print_scan_step(2, total_steps, "Version Enrichment — active probing for hidden versions")
+    from tools.version_probe import enrich_services
+    no_version = [s for s in services if not s.get("version")]
+    if no_version:
+        ui.print_info(f"  {len(no_version)} service(s) have no version string — probing actively …")
+        with ui.spinner("Probing for hidden versions …") as prog:
+            task = prog.add_task("version probe", total=None)
+            enrich_services(target, services)
+            prog.update(task, completed=True)
+        enriched = [s for s in services if s.get("version_probe_method")]
+        if enriched:
+            for svc in enriched:
+                estimate_tag = " [estimate]" if svc.get("version_is_estimate") else ""
+                ui.print_info(
+                    f"  ✓  Port {svc['port']}: {svc.get('product', svc['service'])} "
+                    f"{svc['version']}{estimate_tag}  (via {svc['version_probe_method']})"
+                )
+
+        # Services still without a version after active probing → offer nmap banner rescan
+        still_missing = [s for s in services if not s.get("version")]
+        if still_missing and ui.confirm_nmap_rescan([s["port"] for s in still_missing]):
+            ports_str = ",".join(str(s["port"]) for s in still_missing)
+            ui.print_info(f"  Re-scanning port(s) {ports_str} with --script=banner …")
+            with ui.spinner(f"nmap banner rescan — {ports_str} …") as prog:
+                task = prog.add_task("nmap --script=banner ...", total=None)
+                rescan = run_nmap(
+                    target,
+                    flags=["-sV", "--version-intensity", "9", "--script=banner", "-p", ports_str],
+                    confirmed=confirmed,
+                    timeout=120,
+                )
+                prog.update(task, completed=True)
+            if rescan["success"]:
+                rescan_map = {s["port"]: s for s in parse_nmap_services(rescan["output"])}
+                newly_found = 0
+                for svc in still_missing:
+                    rs = rescan_map.get(svc["port"])
+                    if rs and rs.get("version"):
+                        svc["version"]              = rs["version"]
+                        svc["product"]              = rs.get("product") or svc["product"]
+                        svc["version_probe_method"] = "nmap banner rescan"
+                        newly_found += 1
+                        ui.print_info(
+                            f"  ✓  Port {svc['port']}: {svc['product']} {svc['version']}"
+                            f"  (via nmap banner rescan)"
+                        )
+                if not newly_found:
+                    ui.print_info("  Banner rescan found no additional versions.")
+            else:
+                ui.print_info(f"  Banner rescan failed: {rescan.get('error', 'unknown error')}")
+
+        if not enriched and not [s for s in services if s.get("version_probe_method") == "nmap banner rescan"]:
+            ui.print_info("  No additional versions found via active probing.")
+    else:
+        ui.print_info("  All services already have version strings — skipping active probing.")
+
+    # ── Step 3: CVE Lookup ────────────────────────────────────────────────────
+    ui.print_scan_step(3, total_steps, f"CVE Lookup ({len(services)} service(s))")
     if services:
         with ui.ScanProgress(total=len(services), label="CVE Lookup") as prog:
             for svc in services:
-                keyword = f"{svc['product']} {svc['version']}".strip()
-                prog.advance(keyword or svc["service"])
-                if keyword:
-                    cves = lookup_cves(
-                        keyword,
-                        product=svc["product"],
-                        version=svc["version"],
-                        api_key=NVD_API_KEY,
-                    )
+                label = f"{svc['product']} {svc['version']}".strip() or svc["service"]
+                prog.advance(label)
+                if not svc["version"]:
+                    # Version hidden by server — skip CVE lookup for this service
                     full_result["cve_results"].append(ServiceCVEResult(
                         port=svc["port"], protocol=svc["protocol"],
                         service=svc["service"], product=svc["product"],
-                        version=svc["version"], cves=cves,
+                        version="", cves=[],
                     ))
+                    continue
+                cves = lookup_cves(
+                    f"{svc['product']} {svc['version']}",
+                    product=svc["product"],
+                    version=svc["version"],
+                    api_key=NVD_API_KEY,
+                )
+                full_result["cve_results"].append(ServiceCVEResult(
+                    port=svc["port"], protocol=svc["protocol"],
+                    service=svc["service"], product=svc["product"],
+                    version=svc["version"], cves=cves,
+                    version_is_estimate=svc.get("version_is_estimate", False),
+                ))
         total_cves = sum(len(r.cves) for r in full_result["cve_results"])
         ui.print_cve_results(full_result["cve_results"])
         ui.print_info(f"{total_cves} CVE(s) found")
 
-    # ── Step 3: SSL/TLS ───────────────────────────────────────────────────────
+    # ── Step 4: SSL/TLS ───────────────────────────────────────────────────────
     tls_ports = _detect_tls_ports(nmap_result["output"])
-    ui.print_scan_step(3, total_steps, f"SSL/TLS Analysis ({len(tls_ports)} port(s))")
+    ui.print_scan_step(4, total_steps, f"SSL/TLS Analysis ({len(tls_ports)} port(s))")
     for port in tls_ports:
         ui.print_info(f"  Checking {target}:{port} …")
         ssl_res = check_ssl(target, port)
         full_result["ssl_results"].append(ssl_res)
     ui.print_ssl_results(full_result["ssl_results"])
 
-    # ── Step 4: HTTP Security Headers ─────────────────────────────────────────
+    # ── Step 5: HTTP Security Headers ─────────────────────────────────────────
     web_ports = _detect_web_ports(nmap_result["output"], target)
-    ui.print_scan_step(4, total_steps, f"HTTP Security Headers ({len(web_ports)} URL(s))")
+    ui.print_scan_step(5, total_steps, f"HTTP Security Headers ({len(web_ports)} URL(s))")
     for port, is_https in web_ports:
         ui.print_info(f"  Checking {'https' if is_https else 'http'}://{target}:{port} …")
         http_res = check_http_headers(target, port, use_tls=is_https)
         full_result["http_results"].append(http_res)
     ui.print_http_header_results(full_result["http_results"])
 
-    # ── Step 5: Gobuster (optional) ───────────────────────────────────────────
+    # ── Step 6: Gobuster (optional) ───────────────────────────────────────────
     if include_gobuster and web_ports:
         first_port, first_https = web_ports[0]
         scheme = "https" if first_https else "http"
@@ -353,7 +418,7 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
             if (first_https and first_port == 443) or (not first_https and first_port == 80)
             else f"{scheme}://{target}:{first_port}/"
         )
-        ui.print_scan_step(5, total_steps, f"Directory Scan — {gobuster_url}")
+        ui.print_scan_step(6, total_steps, f"Directory Scan — {gobuster_url}")
         from tools.gobuster_tool import run_gobuster
         with ui.spinner(f"Gobuster — {gobuster_url} …") as prog:
             task = prog.add_task("gobuster dir ...", total=None)
