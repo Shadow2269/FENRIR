@@ -31,7 +31,7 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v1.1.1", style="bold white")
+    banner.append("  v2.0.0", style="bold white")
 
     console.print(Panel(
         banner,
@@ -46,17 +46,24 @@ def print_banner():
 # ── Main menu ─────────────────────────────────────────────────────────────────
 
 MENU_OPTIONS = [
-    ("1", "fullscan",   "Full Scan",       "Complete assessment: Nmap + CVE + SSL + HTTP Headers + Dirs"),
-    ("2", "nmap",       "Nmap Scan",       "Scan a target for open ports, services and CVEs"),
-    ("3", "gobuster",   "Dir Bruteforce",  "Find hidden paths on a web server"),
-    ("4", "subdomain",  "Subdomain Enum",  "Enumerate subdomains via subfinder / amass / crt.sh"),
-    ("5", "takeover",   "Takeover Check",  "Check subdomains for dangling CNAME takeover vulnerabilities"),
-    ("6", "cors",       "CORS Scanner",    "Detect CORS misconfigurations (origin reflection, null, wildcard)"),
-    ("7", "redirect",   "Open Redirect",   "Test URL parameters for open redirect vulnerabilities"),
-    ("8", "xss",       "XSS Scanner",     "Inject XSS payloads into URL parameters and detect reflection"),
-    ("9", "sqli",      "SQLi Tester",     "Test URL parameters for SQL injection (error + boolean based)"),
-    ("r", "redteam",   "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
-    ("0", "quit",      "Exit",            "Quit the program"),
+    ("1",  "fullscan",   "Full Scan",       "Complete assessment: Nmap + CVE + SSL + HTTP Headers + Dirs + JSON Export"),
+    ("2",  "nmap",       "Nmap Scan",       "Scan a target for open ports, services and CVEs"),
+    ("3",  "gobuster",   "Dir Bruteforce",  "Find hidden paths on a web server"),
+    ("4",  "subdomain",  "Subdomain Enum",  "Enumerate subdomains via subfinder / amass / crt.sh"),
+    ("5",  "takeover",   "Takeover Check",  "Check subdomains for dangling CNAME takeover vulnerabilities"),
+    ("6",  "cors",       "CORS Scanner",    "Detect CORS misconfigurations (origin reflection, null, wildcard)"),
+    ("7",  "redirect",   "Open Redirect",   "Test URL parameters for open redirect vulnerabilities"),
+    ("8",  "xss",        "XSS Scanner",     "Inject XSS payloads into URL parameters and detect reflection"),
+    ("9",  "sqli",       "SQLi Tester",     "Test URL parameters for SQL injection (error + boolean based)"),
+    ("a",  "dns",        "DNS Recon",       "WHOIS + DNS records (A/MX/NS/TXT/CNAME) + zone transfer attempt"),
+    ("b",  "waf",        "WAF Detection",   "Fingerprint web application firewalls via headers and probes"),
+    ("c",  "httpmethods","HTTP Methods",    "Test which HTTP methods are enabled (PUT, DELETE, TRACE, ...)"),
+    ("d",  "ssrf",       "SSRF Scanner",    "Detect server-side request forgery via inband response analysis"),
+    ("e",  "lfi",        "LFI Scanner",     "Test URL parameters for local/remote file inclusion vulnerabilities"),
+    ("f",  "jwt",        "JWT Analyzer",    "Analyse a JWT token for alg:none, weak secrets, expiry, PII"),
+    ("g",  "xxe",        "XXE Scanner",     "Send XXE payloads to XML endpoints and check for file leakage"),
+    ("r",  "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
+    ("0",  "quit",       "Exit",            "Quit the program"),
 ]
 
 
@@ -732,5 +739,187 @@ def print_success(msg: str):
 
 def print_info(msg: str):
     console.print(f"  [dim]·[/dim]  [dim]{msg}[/dim]")
+
+
+# ── WAF Detection result ──────────────────────────────────────────────────────
+
+def print_waf_result(result) -> None:
+    icon  = "🟠" if result.detected else "🟢"
+    label = f"[bold yellow]{result.waf_name}[/bold yellow]" if result.detected else "[green]None detected[/green]"
+    conf  = f"  [dim]({result.confidence} confidence)[/dim]" if result.confidence else ""
+    console.print(Panel(
+        f"{icon}  WAF: {label}{conf}\n[dim]{result.evidence}[/dim]",
+        title="[bold]WAF Detection[/bold]",
+        border_style="yellow" if result.detected else "green",
+    ))
+    console.print()
+
+
+# ── DNS Recon result ──────────────────────────────────────────────────────────
+
+def print_dns_result(result) -> None:
+    if not result.success:
+        console.print(f"  [red]DNS recon failed:[/red] {result.error}")
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Type",   style="bold red",  width=8)
+    table.add_column("Record", style="dim white", ratio=1)
+
+    for rtype, values in result.records.items():
+        for i, v in enumerate(values):
+            table.add_row(rtype if i == 0 else "", v[:90])
+
+    zt_line = "[bold red]ZONE TRANSFER POSSIBLE![/bold red]" if result.zone_transfer_possible else "[green]Zone transfer blocked[/green]"
+    subtitle = f"WHOIS: {'OK' if result.whois_data else '—'}  |  Zone Transfer: {zt_line}"
+
+    console.print(Panel(table, title=f"[bold]DNS Recon — {result.target}[/bold]",
+                        subtitle=subtitle, border_style="dim red"))
+    console.print()
+
+
+# ── HTTP Methods result ───────────────────────────────────────────────────────
+
+def print_http_methods_result(result) -> None:
+    dangerous = result.dangerous_allowed
+    color = "yellow" if dangerous else "green"
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Method",  style="bold white", width=12)
+    table.add_column("Status",  width=8)
+    table.add_column("Allowed", width=10)
+    table.add_column("Dangerous", width=12)
+
+    for f in result.findings:
+        allowed_str  = "[green]Yes[/green]" if f.allowed else "[dim]No[/dim]"
+        danger_str   = "[bold red]YES[/bold red]" if (f.dangerous and f.allowed) else ("—" if not f.dangerous else "[dim]No[/dim]")
+        status_str   = str(f.status_code) if f.status_code else "—"
+        table.add_row(f.method, status_str, allowed_str, danger_str)
+
+    subtitle = f"[bold red]{len(dangerous)} dangerous method(s) enabled[/bold red]" if dangerous else "[green]No dangerous methods[/green]"
+    console.print(Panel(table, title="[bold]HTTP Methods Test[/bold]", subtitle=subtitle, border_style=color))
+    console.print()
+
+
+# ── SSRF result ───────────────────────────────────────────────────────────────
+
+def print_ssrf_result(result) -> None:
+    if not result.success:
+        console.print(f"  [red]SSRF scan failed:[/red] {result.error}")
+        return
+    if not result.findings:
+        console.print(Panel("[green]No SSRF indicators detected.[/green]",
+                            title="[bold]SSRF Scanner[/bold]", border_style="green"))
+        console.print()
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Conf",      width=10)
+    table.add_column("Parameter", style="bold white", width=15)
+    table.add_column("Evidence",  style="dim",        ratio=1)
+
+    for f in result.findings:
+        conf_color = "bold red" if f.confidence == "High" else "yellow"
+        table.add_row(Text(f.confidence, style=conf_color), f.parameter, f.evidence[:80])
+
+    console.print(Panel(table, title="[bold red]SSRF Findings[/bold red]", border_style="red"))
+    console.print()
+
+
+# ── LFI result ────────────────────────────────────────────────────────────────
+
+def print_lfi_result(result) -> None:
+    if not result.success:
+        console.print(f"  [red]LFI scan failed:[/red] {result.error}")
+        return
+    if not result.findings:
+        console.print(Panel("[green]No LFI/path traversal indicators detected.[/green]",
+                            title="[bold]LFI Scanner[/bold]", border_style="green"))
+        console.print()
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Conf",      width=10)
+    table.add_column("Type",      width=6)
+    table.add_column("Parameter", style="bold white", width=15)
+    table.add_column("Evidence",  style="dim",        ratio=1)
+
+    for f in result.findings:
+        conf_color = "bold red" if f.confidence == "High" else "yellow"
+        table.add_row(Text(f.confidence, style=conf_color), f.type, f.parameter, f.evidence[:70])
+
+    console.print(Panel(table, title="[bold red]LFI Findings[/bold red]", border_style="red"))
+    console.print()
+
+
+# ── JWT result ────────────────────────────────────────────────────────────────
+
+def print_jwt_result(result) -> None:
+    if not result.success:
+        console.print(f"  [red]JWT analysis failed:[/red] {result.error}")
+        return
+
+    sev_colors = {"Critical": "bold red", "High": "bold yellow",
+                  "Medium": "yellow", "Low": "green", "Info": "dim"}
+
+    if result.payload:
+        payload_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), show_edge=False)
+        payload_table.add_column("k", style="dim",   width=20)
+        payload_table.add_column("v", style="white", ratio=1)
+        for k, v in result.payload.items():
+            payload_table.add_row(k, str(v)[:60])
+        console.print(Panel(payload_table, title="[bold]JWT Payload[/bold]", border_style="dim"))
+
+    if result.findings:
+        table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+        table.add_column("Severity", width=12)
+        table.add_column("Check",    style="bold white", width=25)
+        table.add_column("Detail",   style="dim",        ratio=1)
+        for f in result.findings:
+            color = sev_colors.get(f.severity, "white")
+            table.add_row(Text(f.severity, style=color), f.check_name, f.detail[:80])
+        border = "red" if any(f.severity == "Critical" for f in result.findings) else "yellow"
+        console.print(Panel(table, title="[bold red]JWT Findings[/bold red]", border_style=border))
+    else:
+        console.print(Panel("[green]No security issues found in this JWT.[/green]",
+                            title="[bold]JWT Analyzer[/bold]", border_style="green"))
+    console.print()
+
+
+# ── XXE result ────────────────────────────────────────────────────────────────
+
+def print_xxe_result(result) -> None:
+    if not result.success:
+        console.print(f"  [red]XXE scan failed:[/red] {result.error}")
+        return
+    if not result.findings:
+        console.print(Panel("[green]No XXE vulnerabilities detected.[/green]",
+                            title="[bold]XXE Scanner[/bold]", border_style="green"))
+        console.print()
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Conf",    width=10)
+    table.add_column("Payload", style="bold white", width=25)
+    table.add_column("Evidence", style="dim",       ratio=1)
+
+    for f in result.findings:
+        conf_color = "bold red" if f.confidence == "High" else "yellow"
+        table.add_row(Text(f.confidence, style=conf_color), f.payload_name, f.evidence[:70])
+
+    console.print(Panel(table, title="[bold red]XXE Findings[/bold red]", border_style="red"))
+    console.print()
+
+
+# ── JSON export confirmation ──────────────────────────────────────────────────
+
+def print_json_export(path: str) -> None:
+    console.print(Panel(
+        f"[green]scan_results.json[/green] saved to [bold]{path}[/bold]\n"
+        "[dim]LOKI can import this file on startup.[/dim]",
+        title="[bold]LOKI JSON Export[/bold]",
+        border_style="dim green",
+    ))
+    console.print()
 
 

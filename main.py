@@ -12,6 +12,9 @@ from reports.report_generator import (
     generate_subdomain_report, generate_takeover_report,
     generate_cors_report, generate_redirect_report,
     generate_xss_report, generate_sqli_report,
+    generate_waf_report, generate_dns_report,
+    generate_http_methods_report, generate_ssrf_report,
+    generate_lfi_report, generate_jwt_report, generate_xxe_report,
 )
 
 
@@ -275,7 +278,7 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
         confirmed = True
 
     include_gobuster = ui.confirm_gobuster()
-    total_steps = 6 if include_gobuster else 5
+    total_steps = 7 if include_gobuster else 6
 
     full_result = {
         "target":          target,
@@ -284,6 +287,7 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
         "ssl_results":     [],
         "http_results":    [],
         "gobuster_result": None,
+        "waf_result":      None,
     }
 
     # ── Step 1: Nmap ──────────────────────────────────────────────────────────
@@ -391,25 +395,42 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
         ui.print_cve_results(full_result["cve_results"])
         ui.print_info(f"{total_cves} CVE(s) found")
 
-    # ── Step 4: SSL/TLS ───────────────────────────────────────────────────────
+    # ── Step 4: WAF Detection ─────────────────────────────────────────────────
+    web_ports_early = _detect_web_ports(nmap_result["output"], target)
+    ui.print_scan_step(4, total_steps, "WAF Detection")
+    if web_ports_early:
+        first_port_waf, first_https_waf = web_ports_early[0]
+        scheme_waf = "https" if first_https_waf else "http"
+        waf_url = f"{scheme_waf}://{target}:{first_port_waf}" if first_port_waf not in (80, 443) else f"{scheme_waf}://{target}"
+        from tools.waf_detector import detect_waf
+        with ui.spinner(f"WAF Detection {waf_url} …") as prog:
+            task = prog.add_task("waf detect", total=None)
+            waf_result = detect_waf(waf_url)
+            prog.update(task, completed=True)
+        full_result["waf_result"] = waf_result
+        ui.print_waf_result(waf_result)
+    else:
+        ui.print_info("No HTTP/HTTPS ports found — skipping WAF detection.")
+
+    # ── Step 5: SSL/TLS ───────────────────────────────────────────────────────
     tls_ports = _detect_tls_ports(nmap_result["output"])
-    ui.print_scan_step(4, total_steps, f"SSL/TLS Analysis ({len(tls_ports)} port(s))")
+    ui.print_scan_step(5, total_steps, f"SSL/TLS Analysis ({len(tls_ports)} port(s))")
     for port in tls_ports:
         ui.print_info(f"  Checking {target}:{port} …")
         ssl_res = check_ssl(target, port)
         full_result["ssl_results"].append(ssl_res)
     ui.print_ssl_results(full_result["ssl_results"])
 
-    # ── Step 5: HTTP Security Headers ─────────────────────────────────────────
+    # ── Step 6: HTTP Security Headers ─────────────────────────────────────────
     web_ports = _detect_web_ports(nmap_result["output"], target)
-    ui.print_scan_step(5, total_steps, f"HTTP Security Headers ({len(web_ports)} URL(s))")
+    ui.print_scan_step(6, total_steps, f"HTTP Security Headers ({len(web_ports)} URL(s))")
     for port, is_https in web_ports:
         ui.print_info(f"  Checking {'https' if is_https else 'http'}://{target}:{port} …")
         http_res = check_http_headers(target, port, use_tls=is_https)
         full_result["http_results"].append(http_res)
     ui.print_http_header_results(full_result["http_results"])
 
-    # ── Step 6: Gobuster (optional) ───────────────────────────────────────────
+    # ── Step 7: Gobuster (optional) ───────────────────────────────────────────
     if include_gobuster and web_ports:
         first_port, first_https = web_ports[0]
         scheme = "https" if first_https else "http"
@@ -418,7 +439,7 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
             if (first_https and first_port == 443) or (not first_https and first_port == 80)
             else f"{scheme}://{target}:{first_port}/"
         )
-        ui.print_scan_step(6, total_steps, f"Directory Scan — {gobuster_url}")
+        ui.print_scan_step(7, total_steps, f"Directory Scan — {gobuster_url}")
         from tools.gobuster_tool import run_gobuster
         with ui.spinner(f"Gobuster — {gobuster_url} …") as prog:
             task = prog.add_task("gobuster dir ...", total=None)
@@ -429,10 +450,15 @@ def run_full_scan_mode(target: str, wordlist: str = "wordlists/common.txt"):
     elif include_gobuster:
         ui.print_info("No HTTP/HTTPS ports found — skipping Gobuster.")
 
-    # ── Generate report ───────────────────────────────────────────────────────
+    # ── Generate PDF report ───────────────────────────────────────────────────
     ui.print_info("Generating report …")
     path = generate_full_scan_report(full_result)
     ui.print_report_saved(path)
+
+    # ── JSON Export for LOKI ──────────────────────────────────────────────────
+    from tools.json_export import export_full_scan
+    json_path = export_full_scan(full_result)
+    ui.print_json_export(json_path)
 
 
 # ── Mode: Subdomain Enumeration ──────────────────────────────────────────────
@@ -664,6 +690,143 @@ def run_redirect_mode(url: str):
     ui.print_report_saved(path)
 
 
+# ── Mode: DNS Recon ──────────────────────────────────────────────────────────
+
+def run_dns_mode(domain: str):
+    from tools.dns_recon import run_dns_recon
+    ui.print_info(f"DNS Recon: {domain}")
+    with ui.spinner(f"WHOIS + DNS records {domain} …") as prog:
+        task = prog.add_task("dns recon", total=None)
+        result = run_dns_recon(domain)
+        prog.update(task, completed=True)
+    ui.print_dns_result(result)
+    path = generate_dns_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: WAF Detection ───────────────────────────────────────────────────────
+
+def run_waf_mode(url: str):
+    from tools.waf_detector import detect_waf
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    host = urlparse(url).hostname or url
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+    with ui.spinner(f"WAF Detection {url} …") as prog:
+        task = prog.add_task("waf detect", total=None)
+        result = detect_waf(url)
+        prog.update(task, completed=True)
+    ui.print_waf_result(result)
+    path = generate_waf_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: HTTP Methods ────────────────────────────────────────────────────────
+
+def run_http_methods_mode(url: str):
+    from tools.http_methods import test_http_methods
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    host = urlparse(url).hostname or url
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+    with ui.spinner(f"HTTP Methods {url} …") as prog:
+        task = prog.add_task("http methods", total=None)
+        result = test_http_methods(url)
+        prog.update(task, completed=True)
+    ui.print_http_methods_result(result)
+    path = generate_http_methods_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: SSRF ────────────────────────────────────────────────────────────────
+
+def run_ssrf_mode(url: str):
+    from tools.ssrf_tester import test_ssrf
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    host = urlparse(url).hostname or url
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+    with ui.spinner(f"SSRF scan {url} …") as prog:
+        task = prog.add_task("ssrf scan", total=None)
+        result = test_ssrf(url)
+        prog.update(task, completed=True)
+    ui.print_ssrf_result(result)
+    path = generate_ssrf_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: LFI ─────────────────────────────────────────────────────────────────
+
+def run_lfi_mode(url: str):
+    from tools.lfi_scanner import scan_lfi
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    host = urlparse(url).hostname or url
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+    with ui.spinner(f"LFI scan {url} …") as prog:
+        task = prog.add_task("lfi scan", total=None)
+        result = scan_lfi(url)
+        prog.update(task, completed=True)
+    ui.print_lfi_result(result)
+    path = generate_lfi_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: JWT ─────────────────────────────────────────────────────────────────
+
+def run_jwt_mode(token: str):
+    from tools.jwt_analyzer import analyze_jwt
+    with ui.spinner("Analysing JWT …") as prog:
+        task = prog.add_task("jwt analyze", total=None)
+        result = analyze_jwt(token)
+        prog.update(task, completed=True)
+    ui.print_jwt_result(result)
+    path = generate_jwt_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: XXE ─────────────────────────────────────────────────────────────────
+
+def run_xxe_mode(url: str):
+    from tools.xxe_scanner import scan_xxe
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    host = urlparse(url).hostname or url
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+    with ui.spinner(f"XXE scan {url} …") as prog:
+        task = prog.add_task("xxe scan", total=None)
+        result = scan_xxe(url)
+        prog.update(task, completed=True)
+    ui.print_xxe_result(result)
+    path = generate_xxe_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Interactive menu loop ─────────────────────────────────────────────────────
 
 def run_menu():
@@ -738,6 +901,48 @@ def run_menu():
             target_name, rt_mode, http_url = ui.prompt_redteam_target()
             if target_name:
                 run_redteam_mode(target_name, mode=rt_mode, http_url=http_url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "dns":
+            domain = ui.prompt_target("Target domain (e.g. example.com)")
+            if domain:
+                run_dns_mode(domain)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "waf":
+            url = ui.prompt_target("Target URL (e.g. https://example.com)")
+            if url:
+                run_waf_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "httpmethods":
+            url = ui.prompt_target("Target URL (e.g. https://example.com/api/resource)")
+            if url:
+                run_http_methods_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "ssrf":
+            url = ui.prompt_target("Target URL with params (e.g. http://target.com/fetch?url=http://x)")
+            if url:
+                run_ssrf_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "lfi":
+            url = ui.prompt_target("Target URL with params (e.g. http://target.com/page?file=home)")
+            if url:
+                run_lfi_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "jwt":
+            token = ui.prompt_target("JWT token (paste full token)")
+            if token:
+                run_jwt_mode(token)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "xxe":
+            url = ui.prompt_target("Target URL (XML endpoint, e.g. https://target.com/api/xml)")
+            if url:
+                run_xxe_mode(url)
                 input("\n  Press Enter to return to menu …")
 
 

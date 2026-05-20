@@ -2011,3 +2011,499 @@ def generate_full_scan_report(full_result: dict) -> str:
 
     _md_to_pdf("\n".join(lines), filename)
     return filename
+
+
+# ── WAF Detection Report ──────────────────────────────────────────────────────
+
+def generate_waf_report(result) -> str:
+    """Generate a PDF report from a WAFResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/waf_{safe}_{ts}.pdf"
+
+    status_icon = "✅" if result.success else "❌"
+    risk = "🟠 HIGH" if result.detected else "🟢 NONE"
+
+    lines = [
+        "# WAF Detection Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target**       | `{result.target}` |",
+        f"| **Status**       | {status_icon} {'Success' if result.success else 'Failed'} |",
+        f"| **WAF Detected** | {'Yes' if result.detected else 'No'} |",
+        f"| **WAF Name**     | {result.waf_name or '—'} |",
+        f"| **Confidence**   | {result.confidence or '—'} |",
+        f"| **Risk Level**   | {risk} |",
+        f"| **Timestamp**    | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.detected:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.detected:
+        lines += [
+            "## Finding",
+            "",
+            f"> **{result.waf_name or 'Unknown WAF'} detected** with {result.confidence} confidence.",
+            "",
+            f"**Evidence:** {result.evidence}",
+            "",
+            "## Impact on Testing",
+            "",
+            "- Automated scanners (XSS, SQLi, LFI, SSRF) may produce **false negatives** — the WAF blocks payloads before they reach the application.",
+            "- Use WAF bypass techniques (encoding, case variation, chunked transfer) for manual testing.",
+            "- A detected WAF does **not** mean the application is secure — WAFs can be bypassed.",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No WAF signatures detected. The server may:",
+            "",
+            "- Have no WAF in place (application is directly reachable)",
+            "- Use a WAF in stealth/transparent mode (no identifying headers or block pages)",
+            "",
+            "_Note: Absence of WAF detection does not confirm the absence of a WAF._",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── DNS Recon Report ──────────────────────────────────────────────────────────
+
+def generate_dns_report(result) -> str:
+    """Generate a PDF report from a DNSReconResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace(".", "_")
+    filename = f"{REPORT_DIR}/dns_{safe}_{ts}.pdf"
+
+    status_icon = "✅" if result.success else "❌"
+    risk = "🔴 CRITICAL" if result.zone_transfer_possible else "🟢 INFO"
+
+    lines = [
+        "# DNS Reconnaissance Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target Domain** | `{result.target}` |",
+        f"| **Status**        | {status_icon} {'Success' if result.success else 'Failed'} |",
+        f"| **Zone Transfer** | {'🔴 POSSIBLE' if result.zone_transfer_possible else '🟢 Not possible'} |",
+        f"| **Risk Level**    | {risk} |",
+        f"| **Timestamp**     | {ts} |",
+        "",
+    ]
+
+    if result.error:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.zone_transfer_possible:
+        lines += [
+            "## Zone Transfer (AXFR) — CRITICAL",
+            "",
+            "> **Zone transfer is possible!** This exposes the complete DNS zone —",
+            "> all subdomains, internal hostnames, and IP addresses are readable by anyone.",
+            "",
+            "| Record |",
+            "|---|",
+        ]
+        for rec in result.zone_transfer_records[:50]:
+            lines.append(f"| `{rec}` |")
+        if len(result.zone_transfer_records) > 50:
+            lines.append(f"| _(+{len(result.zone_transfer_records) - 50} more)_ |")
+        lines += [
+            "",
+            "**Remediation:** Restrict AXFR to authorized secondary nameservers only.",
+            "",
+        ]
+
+    if result.whois_data:
+        whois = result.whois_data
+        lines += ["## WHOIS Information", "", "| Field | Value |", "|---|---|"]
+        label_map = {
+            "domain_name": "Domain Name", "registrar": "Registrar",
+            "creation_date": "Created", "expiration_date": "Expires",
+            "updated_date": "Updated", "name_servers": "Nameservers",
+            "status": "Status", "emails": "Contact Emails",
+            "org": "Organisation", "country": "Country",
+        }
+        for key, label in label_map.items():
+            val = whois.get(key, "")
+            if val and key != "error":
+                lines.append(f"| **{label}** | {val[:80]} |")
+        lines.append("")
+
+    if result.records:
+        lines += ["## DNS Records", ""]
+        for rtype, values in result.records.items():
+            lines += [f"### {rtype}", "", "| Record |", "|---|"]
+            for v in values:
+                lines.append(f"| `{v[:100]}` |")
+            lines.append("")
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── HTTP Methods Report ───────────────────────────────────────────────────────
+
+def generate_http_methods_report(result) -> str:
+    """Generate a PDF report from an HTTPMethodsResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/httpmethods_{safe}_{ts}.pdf"
+
+    dangerous = result.dangerous_allowed
+    risk = "🟠 HIGH" if dangerous else "🟢 NONE"
+
+    lines = [
+        "# HTTP Methods Test Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**        | `{result.target}` |",
+        f"| **Status**            | {'Success' if result.success else 'Failed'} |",
+        f"| **Dangerous Methods** | {len(dangerous)} |",
+        f"| **Risk Level**        | {risk} |",
+        f"| **Timestamp**         | {ts} |",
+        "",
+        "## Method Results",
+        "",
+        "| Method | Status | Dangerous | Allowed | Note |",
+        "|---|---|---|---|---|",
+    ]
+
+    for f in result.findings:
+        danger_icon  = "🔴 Yes" if f.dangerous else "—"
+        allowed_icon = "✅ Yes" if f.allowed else "❌ No"
+        status_str   = str(f.status_code) if f.status_code else "No response"
+        lines.append(f"| `{f.method}` | {status_str} | {danger_icon} | {allowed_icon} | {f.detail[:70]} |")
+    lines.append("")
+
+    if dangerous:
+        lines += [
+            "## Dangerous Methods Enabled",
+            "",
+            "> These methods are active and could be abused by an attacker.",
+            "",
+        ]
+        for f in dangerous:
+            lines += [f"### 🔴 {f.method} (HTTP {f.status_code})", "", f"**Risk:** {f.detail}", ""]
+
+        lines += [
+            "## Remediation",
+            "",
+            "```apache",
+            "# Apache — allow only GET, POST, HEAD",
+            "<LimitExcept GET POST HEAD>",
+            "  Require all denied",
+            "</LimitExcept>",
+            "```",
+            "",
+            "```nginx",
+            "# nginx",
+            "if ($request_method !~ ^(GET|POST|HEAD)$) {",
+            "    return 405;",
+            "}",
+            "```",
+            "",
+        ]
+    else:
+        lines += ["## Result", "", "No dangerous HTTP methods are enabled.", ""]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── SSRF Report ───────────────────────────────────────────────────────────────
+
+def generate_ssrf_report(result) -> str:
+    """Generate a PDF report from an SSRFResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/ssrf_{safe}_{ts}.pdf"
+
+    high = result.high_confidence
+    risk = "🔴 CRITICAL" if high else ("🟡 MEDIUM" if result.has_findings else "🟢 NONE")
+
+    lines = [
+        "# SSRF Scanner Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**      | `{result.target}` |",
+        f"| **Status**          | {'Success' if result.success else 'Failed'} |",
+        f"| **High Confidence** | {len(high)} |",
+        f"| **Total Findings**  | {len(result.findings)} |",
+        f"| **Risk Level**      | {risk} |",
+        f"| **Timestamp**       | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Findings",
+            "",
+            "| Confidence | Parameter | Payload | Evidence |",
+            "|---|---|---|---|",
+        ]
+        for f in result.findings:
+            conf_icon = "🔴 High" if f.confidence == "High" else "🟡 Medium"
+            payload_t = f.payload[:50] + ("..." if len(f.payload) > 50 else "")
+            lines.append(f"| {conf_icon} | `{f.parameter}` | `{payload_t}` | {f.evidence[:80]} |")
+        lines += [
+            "",
+            "## Impact",
+            "",
+            "SSRF allows an attacker to make the server send requests to internal resources — "
+            "cloud metadata endpoints, internal APIs, and file system content. "
+            "In cloud environments metadata endpoints often return administrative credentials.",
+            "",
+            "## Remediation",
+            "",
+            "- **Allowlist outbound destinations** — only permit requests to known, trusted URLs.",
+            "- **Block private IP ranges** at network and application layer.",
+            "- In cloud environments, use **IMDSv2** which requires a session token.",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No SSRF indicators detected. Out-of-band (blind) SSRF was not tested.",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── LFI/RFI Report ────────────────────────────────────────────────────────────
+
+def generate_lfi_report(result) -> str:
+    """Generate a PDF report from an LFIResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/lfi_{safe}_{ts}.pdf"
+
+    confirmed = result.confirmed
+    risk = "🔴 CRITICAL" if confirmed else ("🟡 MEDIUM" if result.has_findings else "🟢 NONE")
+
+    lines = [
+        "# LFI / Path Traversal Scan Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**    | `{result.target}` |",
+        f"| **Status**        | {'Success' if result.success else 'Failed'} |",
+        f"| **Confirmed LFI** | {len(confirmed)} |",
+        f"| **Risk Level**    | {risk} |",
+        f"| **Timestamp**     | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Findings",
+            "",
+            "| Confidence | Type | Parameter | Evidence |",
+            "|---|---|---|---|",
+        ]
+        for f in result.findings:
+            conf_icon = "🔴 High" if f.confidence == "High" else "🟡 Medium"
+            lines.append(f"| {conf_icon} | {f.type} | `{f.parameter}` | {f.evidence} |")
+        lines.append("")
+
+        lines += ["## Detailed Findings", ""]
+        for i, f in enumerate(result.findings, 1):
+            lines += [
+                f"### Finding {i} — {f.type} in `{f.parameter}`",
+                "",
+                f"**Payload:** `{f.payload}`  ",
+                f"**Evidence:** {f.evidence}",
+                "",
+                "```",
+                f.response_snippet.strip(),
+                "```",
+                "",
+                "**Impact:** LFI allows reading arbitrary server files (source code, credentials, "
+                "private keys). Combined with log poisoning it can escalate to RCE.",
+                "",
+            ]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- Never pass user input directly to file system functions.",
+            "- Use `realpath()` and verify the canonical path is within the expected directory.",
+            "- Allowlist valid file names — reject paths containing `../` or absolute paths.",
+            "",
+        ]
+    else:
+        lines += ["## Result", "", "No LFI/path traversal indicators detected.", ""]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── JWT Report ────────────────────────────────────────────────────────────────
+
+def generate_jwt_report(result) -> str:
+    """Generate a PDF report from a JWTResult object."""
+    _ensure_dir()
+    ts       = _timestamp()
+    filename = f"{REPORT_DIR}/jwt_{ts}.pdf"
+
+    sev_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0, "None": -1}
+    top_sev = max((f.severity for f in result.findings), key=lambda s: sev_order.get(s, -1), default="None")
+    risk_map = {"Critical": "🔴 CRITICAL", "High": "🟠 HIGH", "Medium": "🟡 MEDIUM",
+                "Low": "🔵 LOW", "Info": "🟢 INFO", "None": "🟢 NONE"}
+    risk = risk_map.get(top_sev, "🟢 NONE")
+    sev_icons = {"Critical": "🔴 Critical", "High": "🟠 High", "Medium": "🟡 Medium",
+                 "Low": "🔵 Low", "Info": "🟢 Info"}
+
+    lines = [
+        "# JWT Security Analysis Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Token**      | `{result.token_preview}` |",
+        f"| **Status**     | {'Success' if result.success else 'Failed'} |",
+        f"| **Findings**   | {len(result.findings)} |",
+        f"| **Risk Level** | {risk} |",
+        f"| **Timestamp**  | {ts} |",
+        "",
+    ]
+
+    if result.error:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.header or result.payload:
+        lines += ["## Token Contents", ""]
+        if result.header:
+            lines += ["**Header:**", "", "| Key | Value |", "|---|---|"]
+            for k, v in result.header.items():
+                lines.append(f"| `{k}` | `{v}` |")
+            lines.append("")
+        if result.payload:
+            lines += ["**Payload (Claims):**", "", "| Claim | Value |", "|---|---|"]
+            for k, v in result.payload.items():
+                lines.append(f"| `{k}` | `{str(v)[:60]}` |")
+            lines.append("")
+
+    if result.findings:
+        lines += ["## Security Findings", "", "| Severity | Check | Detail |", "|---|---|---|"]
+        for f in result.findings:
+            icon = sev_icons.get(f.severity, f.severity)
+            lines.append(f"| {icon} | {f.check_name} | {f.detail[:100]} |")
+        lines += ["", "## Detailed Findings", ""]
+        for f in result.findings:
+            icon = sev_icons.get(f.severity, f.severity)
+            lines += [f"### {icon} {f.check_name}", "", f.detail, ""]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- Use strong, random secrets (min. 256 bits) for HMAC algorithms.",
+            "- Reject `alg:none` tokens — always require a valid signature.",
+            "- Always set `exp` claims and reject expired tokens server-side.",
+            "- Use RS256/ES256 (asymmetric) in production instead of HS256.",
+            "- Do not store sensitive data in JWT payloads — they are base64-encoded, not encrypted.",
+            "",
+        ]
+    else:
+        lines += ["## Result", "", "No security issues detected in this JWT token.", ""]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── XXE Report ────────────────────────────────────────────────────────────────
+
+def generate_xxe_report(result) -> str:
+    """Generate a PDF report from an XXEResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{REPORT_DIR}/xxe_{safe}_{ts}.pdf"
+
+    high = [f for f in result.findings if f.confidence == "High"]
+    risk = "🔴 CRITICAL" if high else ("🟡 MEDIUM" if result.has_findings else "🟢 NONE")
+
+    lines = [
+        "# XXE (XML External Entity) Scan Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target URL**     | `{result.target}` |",
+        f"| **Status**         | {'Success' if result.success else 'Failed'} |",
+        f"| **Confirmed XXE**  | {len(high)} |",
+        f"| **Total Findings** | {len(result.findings)} |",
+        f"| **Risk Level**     | {risk} |",
+        f"| **Timestamp**      | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Findings",
+            "",
+            "| Confidence | Payload | Evidence |",
+            "|---|---|---|",
+        ]
+        for f in result.findings:
+            conf_icon = "🔴 High" if f.confidence == "High" else "🟡 Medium"
+            lines.append(f"| {conf_icon} | {f.payload_name} | {f.evidence[:80]} |")
+        lines.append("")
+
+        for i, f in enumerate([x for x in result.findings if x.confidence == "High"], 1):
+            lines += [f"### Finding {i} — {f.payload_name}", "", f"**Evidence:** {f.evidence}", ""]
+            if f.snippet:
+                lines += ["```", f.snippet.strip(), "```", ""]
+            lines += [
+                "**Impact:** XXE allows arbitrary file reads, SSRF, and in some configurations RCE.",
+                "",
+            ]
+
+        lines += [
+            "## Remediation",
+            "",
+            "- **Disable external entity processing** in your XML parser:",
+            "",
+            "```python",
+            "from lxml import etree",
+            "parser = etree.XMLParser(resolve_entities=False, no_network=True)",
+            "```",
+            "",
+            "- Use JSON instead of XML where possible.",
+            "- Reject XML documents containing DOCTYPE declarations.",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No XXE vulnerabilities detected. Blind XXE (out-of-band) was not tested.",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
