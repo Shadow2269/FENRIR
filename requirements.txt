@@ -8,3 +8,4 @@ requests>=2.31.0
 pydantic>=2.7.0
 xhtml2pdf>=0.2.11
 dnspython>=2.6.0
+cryptography>=41.0.0

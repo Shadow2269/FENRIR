@@ -9,6 +9,38 @@ from dataclasses import dataclass, field
 from logger import warn, log
 
 
+def _parse_cert(der_bytes: bytes) -> tuple[str, str, str, int]:
+    """Parse a DER-encoded certificate into (subject_cn, issuer_cn, not_after_str, days_remaining).
+
+    Works with CERT_NONE connections where getpeercert() returns an empty dict —
+    binary_form=True always returns the raw bytes regardless of verify_mode.
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+
+        cert = x509.load_der_x509_certificate(der_bytes, default_backend())
+
+        def _cn(name) -> str:
+            attrs = name.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+            return attrs[0].value if attrs else ""
+
+        subject_cn = _cn(cert.subject)
+        issuer_cn  = _cn(cert.issuer)
+
+        try:
+            not_after = cert.not_valid_after_utc  # cryptography >= 42
+            days = (not_after - datetime.datetime.now(datetime.timezone.utc)).days
+        except AttributeError:
+            not_after = cert.not_valid_after      # older: naive UTC datetime
+            days = (not_after - datetime.datetime.utcnow()).days
+
+        not_after_str = not_after.strftime("%b %d %H:%M:%S %Y GMT")
+        return subject_cn, issuer_cn, not_after_str, days
+    except Exception:
+        return "", "", "", 0
+
+
 @dataclass
 class SslFinding:
     severity: str   # Critical / High / Medium / Low / Info
@@ -61,13 +93,14 @@ def check_ssl(target: str, port: int = 443) -> SslResult:
                 cipher = ssock.cipher()
                 result.cipher_name = cipher[0] if cipher else ""
 
-                cert = ssock.getpeercert()
-                if cert:
-                    result.cert_subject = _extract_cn(cert.get("subject", ()))
-                    result.cert_issuer  = _extract_cn(cert.get("issuer", ()))
-                    not_after = cert.get("notAfter", "")
-                    result.cert_expiry  = not_after
-                    result.days_until_expiry = _days_until(not_after)
+                cert_der = ssock.getpeercert(binary_form=True)
+                if cert_der:
+                    (
+                        result.cert_subject,
+                        result.cert_issuer,
+                        result.cert_expiry,
+                        result.days_until_expiry,
+                    ) = _parse_cert(cert_der)
                     result.cert_expired = result.days_until_expiry < 0
                     result.self_signed  = result.cert_subject == result.cert_issuer
     except Exception as exc:
@@ -100,24 +133,6 @@ def _test_tls_version(host: str, port: int, version_name: str) -> bool:
     except Exception:
         return False
 
-
-def _extract_cn(rdns_tuple) -> str:
-    for rdn in rdns_tuple:
-        for attr in rdn:
-            if attr[0] == "commonName":
-                return attr[1]
-    return ""
-
-
-def _days_until(not_after: str) -> int:
-    """Parse SSL cert expiry string and return days remaining (negative = expired)."""
-    if not not_after:
-        return 0
-    try:
-        expiry = datetime.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
-        return (expiry - datetime.datetime.utcnow()).days
-    except ValueError:
-        return 0
 
 
 def _analyze(r: SslResult) -> list[SslFinding]:
