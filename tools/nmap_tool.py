@@ -35,7 +35,9 @@ def run_nmap(
     Returns:
         dict with keys: success (bool), target, output (str), error (str)
     """
-    if shutil.which("nmap") is None:
+    import sys
+    _nmap = "nmap.exe" if sys.platform == "win32" else "nmap"
+    if shutil.which(_nmap) is None:
         return {
             "success": False,
             "target": target,

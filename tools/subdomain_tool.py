@@ -5,6 +5,7 @@ Subdomain enumeration via subfinder/amass (external tools) with crt.sh API fallb
 Priority: subfinder -> amass -> crt.sh
 """
 import os
+import sys
 import shutil
 import subprocess
 import requests
@@ -13,23 +14,36 @@ from dataclasses import dataclass, field
 from security.validator import validate_tool
 from logger import warn
 
-# Explicit fallback paths for Windows installs that may not be on PATH yet
-_SUBFINDER_PATHS = [
-    r"C:\Tools\subfinder.exe",
-    r"C:\Tools\subfinder",
-    str(Path.home() / "go" / "bin" / "subfinder.exe"),
-    str(Path.home() / "go" / "bin" / "subfinder"),
-]
+_IS_WINDOWS = sys.platform == "win32"
 
-_AMASS_PATHS = [
-    r"C:\Tools\amass.exe",
-    r"C:\Tools\amass",
-    str(Path.home() / "go" / "bin" / "amass.exe"),
-]
+
+def _fallback_paths(name: str) -> list[str]:
+    """Return platform-specific fallback paths for an external binary."""
+    go_bin = Path.home() / "go" / "bin"
+    if _IS_WINDOWS:
+        return [
+            str(go_bin / f"{name}.exe"),
+            str(go_bin / name),
+            rf"C:\Tools\{name}.exe",
+            rf"C:\Tools\{name}",
+        ]
+    # Linux / macOS
+    return [
+        str(go_bin / name),
+        f"/opt/homebrew/bin/{name}",   # Homebrew on Apple Silicon
+        f"/usr/local/bin/{name}",      # Homebrew on Intel / Linux manual installs
+        f"/usr/bin/{name}",
+    ]
+
+
+_SUBFINDER_PATHS = _fallback_paths("subfinder")
+_AMASS_PATHS     = _fallback_paths("amass")
 
 
 def _find_binary(name: str, extra_paths: list[str]) -> str | None:
-    found = shutil.which(name) or shutil.which(name + ".exe")
+    found = shutil.which(name)
+    if _IS_WINDOWS:
+        found = found or shutil.which(name + ".exe")
     if found:
         return found
     for p in extra_paths:

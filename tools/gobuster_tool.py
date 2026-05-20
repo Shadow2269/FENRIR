@@ -114,7 +114,9 @@ def run_gobuster(
         )
 
     # ── Binary check ──────────────────────────────────────────────────────────
-    gobuster_bin = shutil.which("gobuster") or shutil.which("gobuster.exe")
+    import sys
+    _exe = ".exe" if sys.platform == "win32" else ""
+    gobuster_bin = shutil.which("gobuster") or shutil.which(f"gobuster{_exe}")
     if not gobuster_bin:
         return GobusterResult(
             success=False,
