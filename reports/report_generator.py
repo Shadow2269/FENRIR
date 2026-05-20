@@ -37,12 +37,13 @@ _HTML_TEMPLATE = """\
   h3 {{ color: #333333; font-size: 11pt; margin-top: 13px; margin-bottom: 4px; }}
   h4 {{ color: #555555; font-size: 10pt; margin-top: 10px; margin-bottom: 3px; }}
   /* ── Tables ───────────────────────────────────────────────────────────── */
-  table {{ width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 7.5pt; }}
   th {{ background-color: #c0392b; color: white; padding: 5px 8px;
-        text-align: left; font-weight: bold; }}
+        text-align: left; font-weight: bold; font-size: 7.5pt; }}
   td {{ padding: 4px 8px; border-bottom: 1px solid #e5e5e5;
-        vertical-align: top; word-wrap: break-word; }}
+        vertical-align: top; word-wrap: break-word; font-size: 7.5pt; }}
   tr.even td {{ background-color: #f8f8f8; }}
+  table code {{ font-size: 7pt; }}
   /* ── Code ─────────────────────────────────────────────────────────────── */
   code {{ background-color: #f0f0f0; padding: 1px 3px; font-size: 8.5pt;
           font-family: Courier New, Courier, monospace; }}
