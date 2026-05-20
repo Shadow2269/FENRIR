@@ -292,6 +292,15 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
     ports = _parse_ports(raw_out)
     host_info = _parse_host_info(raw_out)
 
+    # Overlay versions discovered via active probing (not in raw nmap output)
+    _overlay_probed_versions(ports, cve_results)
+
+    # Build set of ports whose version came from nmap (not probe) for CVE section
+    nmap_versioned = {
+        p["port"].split("/")[0]
+        for p in _parse_ports(raw_out) if p["version"]
+    }
+
     # ── Attack surface summary ─────────────────────────────────────────────────
     lines += _attack_surface_summary(ports, host_info)
 
@@ -320,7 +329,7 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
             note_col        = ver_warn or sev_note or "—"
             lines.append(
                 f"| `{p['port']}` | {state_icon} {p['state']} "
-                f"| {p['service']} | {p['version'] or '—'} "
+                f"| {p['service']} | {_version_display(p)} "
                 f"| {sev_icon or '—'} | {note_col} |"
             )
         lines.append("")
@@ -342,7 +351,10 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
 
         for svc_result in cve_results:
             port_label = f"Port {svc_result.port}/{svc_result.protocol}"
-            svc_label  = f"{svc_result.product} {svc_result.version}".strip() or svc_result.service
+            version_tag = ""
+            if svc_result.version and str(svc_result.port) not in nmap_versioned:
+                version_tag = " *(version estimate — active probe)*" if svc_result.version_is_estimate else " *(version via active probe)*"
+            svc_label  = (f"{svc_result.product} {svc_result.version}".strip() or svc_result.service) + version_tag
 
             if not svc_result.cves:
                 if not svc_result.version:
@@ -371,6 +383,16 @@ def generate_nmap_report(nmap_result: dict, run_cve: bool = True) -> str:
             sev_icon     = _severity_icon(top_severity)
 
             lines += [f"### {sev_icon} {port_label} — {svc_label}", ""]
+            if version_tag:
+                note = (
+                    "> ⚠ **Version estimate** — this version was determined via behavioral "
+                    "fingerprinting, not a direct version string. CVE results are marked "
+                    "unverified and require manual confirmation."
+                    if svc_result.version_is_estimate else
+                    "> ℹ **Version via active probe** — nmap did not report a version string; "
+                    "FENRIR detected it by probing the service directly (HTTP header, banner, etc.)."
+                )
+                lines += [note, ""]
 
             def _cve_table_rows(cves) -> list[str]:
                 rows = [
@@ -630,6 +652,33 @@ def _parse_ports(raw: str) -> list[dict]:
             "version": m.group(4).strip(),
         })
     return ports
+
+
+def _overlay_probed_versions(ports: list[dict], cve_results: list) -> None:
+    """
+    For ports that nmap reported without a version, overlay the version found
+    by active probing (stored in cve_results).  Adds 'version_probed' and
+    'version_is_estimate' flags to the port dict in-place.
+    """
+    cve_map = {str(r.port): r for r in cve_results}
+    for p in ports:
+        port_num = p["port"].split("/")[0]
+        if not p["version"] and port_num in cve_map:
+            r = cve_map[port_num]
+            if r.version:
+                p["version"]             = r.version
+                p["version_probed"]      = True
+                p["version_is_estimate"] = r.version_is_estimate
+
+
+def _version_display(p: dict) -> str:
+    """Format the version string for a port row, with probe/estimate tags."""
+    v = p.get("version") or "—"
+    if p.get("version_is_estimate"):
+        return f"{v} *(est.)*"
+    if p.get("version_probed"):
+        return f"{v} *(probed)*"
+    return v
 
 
 def _parse_host_info(raw: str) -> dict:
@@ -1757,6 +1806,15 @@ def generate_full_scan_report(full_result: dict) -> str:
     ports    = _parse_ports(raw_out)
     host_info = _parse_host_info(raw_out)
 
+    # Overlay versions found via active probing
+    _overlay_probed_versions(ports, cve_results)
+
+    # Ports whose version was reported directly by nmap (for CVE section tagging)
+    nmap_versioned_full = {
+        p["port"].split("/")[0]
+        for p in _parse_ports(raw_out) if p["version"]
+    }
+
     # ── Report header ─────────────────────────────────────────────────────────
     lines = [
         f"# FENRIR Security Report — `{target}`",
@@ -1798,7 +1856,7 @@ def generate_full_scan_report(full_result: dict) -> str:
             note_col        = ver_warn or note or "—"
             lines.append(
                 f"| `{p['port']}` | {state_icon} {p['state']} "
-                f"| {p['service']} | {p['version'] or '—'} "
+                f"| {p['service']} | {_version_display(p)} "
                 f"| {sev_icon or '—'} | {note_col} |"
             )
         lines.append("")
@@ -1807,6 +1865,10 @@ def generate_full_scan_report(full_result: dict) -> str:
     if cve_results:
         lines += ["### CVE Analysis", ""]
         for svc in cve_results:
+            version_tag_full = ""
+            if svc.version and str(svc.port) not in nmap_versioned_full:
+                version_tag_full = " *(estimate)*" if svc.version_is_estimate else " *(probed)*"
+
             if not svc.cves:
                 if not svc.version:
                     lines += [
@@ -1817,15 +1879,31 @@ def generate_full_scan_report(full_result: dict) -> str:
                         "the `Server:` header to identify the exact version.",
                         "",
                     ]
+                else:
+                    lines += [
+                        f"#### 🟢 Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}{version_tag_full}",
+                        "",
+                        "_No CVEs found for this version._",
+                        "",
+                    ]
                 continue
             verified   = svc.verified_cves
             unverified = svc.unverified_cves
             top_sev  = _top_severity(verified or svc.cves)
             sev_icon = _severity_icon(top_sev)
             lines += [
-                f"#### {sev_icon} Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}",
+                f"#### {sev_icon} Port {svc.port}/{svc.protocol} — {svc.product} {svc.version}{version_tag_full}",
                 "",
             ]
+            if version_tag_full:
+                probe_note = (
+                    "> ⚠ **Version estimate** — determined via behavioral fingerprinting. "
+                    "CVE results may be imprecise; manual version confirmation recommended."
+                    if svc.version_is_estimate else
+                    "> ℹ **Version via active probe** — nmap suppressed the version string; "
+                    "FENRIR detected it by probing the service directly."
+                )
+                lines += [probe_note, ""]
 
             def _full_cve_rows(cves, label: str = "") -> list[str]:
                 if not cves:
