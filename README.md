@@ -7,9 +7,9 @@ AI-powered, modular offensive security toolkit built for Bug Bounty reconnaissan
 
 ## Tools
 
-| # | Mode | Tool | What it does |
+| Key | Mode | Tool | What it does |
 |---|---|---|---|
-| 1 | `fullscan` | Full Scan | Nmap + CVE lookup + SSL/TLS + HTTP headers + optional Gobuster — all in one run |
+| 1 | `fullscan` | Full Scan | Nmap + CVE lookup + SSL/TLS + HTTP headers + WAF + optional Gobuster — all in one run, exports JSON for LOKI |
 | 2 | `nmap` | Nmap Scan | Port scan with service/version detection and automatic CVE lookup via NVD API |
 | 3 | `gobuster` | Dir Bruteforce | Hidden path discovery on web servers |
 | 4 | `subdomain` | Subdomain Enum | Finds subdomains via subfinder → amass → crt.sh → HackerTarget (auto-fallback) |
@@ -18,7 +18,17 @@ AI-powered, modular offensive security toolkit built for Bug Bounty reconnaissan
 | 7 | `redirect` | Open Redirect | Tests 29 redirect parameters with 9 bypass payloads; inspects Location header |
 | 8 | `xss` | XSS Scanner | Injects 20 XSS payloads into every URL parameter; confirms unescaped reflection |
 | 9 | `sqli` | SQLi Tester | Error-based (23 payloads, DB fingerprints) + boolean differential detection |
-| r | `redteam` | AI Red-Team | Fires adversarial prompts against AI endpoints with CVSS scoring |
+| a | `dns` | DNS Recon | WHOIS + A/MX/NS/TXT/CNAME records + zone transfer attempt (AXFR) |
+| b | `waf` | WAF Detection | Fingerprints web application firewalls via headers and malicious probes |
+| c | `httpmethods` | HTTP Methods | Tests which HTTP methods are enabled (PUT, DELETE, TRACE, OPTIONS, …) |
+| d | `ssrf` | SSRF Scanner | Inband SSRF detection via cloud-metadata and internal IP payloads |
+| e | `lfi` | LFI Scanner | Path traversal and file inclusion detection (LFI + RFI payloads) |
+| f | `jwt` | JWT Analyzer | Tests alg:none, weak secret bruteforce, RS256→HS256 confusion, expired tokens, PII in payload |
+| g | `xxe` | XXE Scanner | Sends XXE payloads to XML endpoints; detects inband file leakage |
+| h | `idor` | IDOR Detector | Probes numeric IDs in URL path segments and query params (±1/5/10/50/100 offsets) |
+| i | `fingerprint` | Tech Fingerprint | Identifies server, CMS, framework, language and frontend via headers, body patterns, cookies and favicon hash |
+| j | `paramdiscovery` | Param Discovery | Brute-forces 300 hidden GET/POST parameters via response-length differential |
+| r | `redteam` | AI Red-Team | Fires 19 adversarial prompts against AI endpoints with CVSS scoring |
 
 Every tool produces a **PDF report** saved to the `result/` directory.
 
@@ -47,6 +57,27 @@ NVD_API_KEY=...        # optional — increases NVD rate limit
 **Optional external tools** (improves subdomain enumeration):
 - [subfinder](https://github.com/projectdiscovery/subfinder) — place at `C:\Tools\subfinder.exe`
 - [gobuster](https://github.com/OJ/gobuster) — required for directory scan
+
+---
+
+## OPSEC Mode
+
+Set `OPSEC_MODE=true` in `.env` to enable stealth settings for internal scans:
+
+| Setting | Normal | OPSEC |
+|---|---|---|
+| Nmap timing | `-T4` / `-T3` | `-T1 --scan-delay 2s --randomize-hosts` |
+| Gobuster threads | 10 | 1 |
+| Gobuster delay | none | `--delay 1000ms` |
+| User-Agent | `Mozilla/5.0 (FENRIR security scanner)` | Chrome 124 on Windows 10 |
+| Inter-request delay | none | `OPSEC_DELAY` seconds (default 2.0) |
+
+The banner turns orange and shows an OPSEC warning when active.
+
+```env
+OPSEC_MODE=true
+OPSEC_DELAY=2.0   # seconds between HTTP requests
+```
 
 ---
 
@@ -95,24 +126,37 @@ scanme.nmap.org
 SecurityTool/
 ├── main.py                    # Entry point + mode dispatcher
 ├── config.py                  # Central config (.env-based)
+├── opsec.py                   # OPSEC helper: stealth UA + inter-request sleep
 ├── requirements.txt
 │
 ├── tools/
-│   ├── nmap_tool.py           # Nmap wrapper (5 scan types)
+│   ├── nmap_tool.py           # Nmap wrapper (5 scan types, OPSEC-aware)
 │   ├── cve_lookup.py          # NVD API v2 CVE lookup
-│   ├── gobuster_tool.py       # Gobuster wrapper
+│   ├── gobuster_tool.py       # Gobuster wrapper (OPSEC-aware)
 │   ├── ssl_tool.py            # SSL/TLS certificate + cipher analysis
 │   ├── http_headers_tool.py   # HTTP security header check
 │   ├── subdomain_tool.py      # Subdomain enumeration
-│   ├── takeover_checker.py    # Subdomain takeover detection
+│   ├── takeover_checker.py    # Subdomain takeover detection (30+ fingerprints)
 │   ├── cors_scanner.py        # CORS misconfiguration scanner
 │   ├── redirect_scanner.py    # Open redirect scanner
-│   ├── xss_scanner.py         # Reflected XSS scanner
-│   └── sqli_tester.py         # SQL injection tester
+│   ├── xss_scanner.py         # Reflected XSS scanner (20 payloads)
+│   ├── sqli_tester.py         # SQL injection tester (error + boolean)
+│   ├── waf_detector.py        # WAF fingerprinting
+│   ├── dns_recon.py           # WHOIS + DNS records + zone transfer
+│   ├── http_methods.py        # HTTP method enumeration
+│   ├── ssrf_tester.py         # SSRF inband detection
+│   ├── lfi_scanner.py         # LFI/RFI path traversal scanner
+│   ├── jwt_analyzer.py        # JWT vulnerability analysis
+│   ├── xxe_scanner.py         # XXE injection scanner
+│   ├── idor_tester.py         # IDOR detector (ID offset probing)
+│   ├── fingerprint_tool.py    # Technology fingerprinting
+│   ├── param_discovery.py     # Hidden parameter discovery (300-name wordlist)
+│   ├── version_probe.py       # Active version probing for hidden service versions
+│   └── json_export.py         # Structured JSON export for LOKI
 │
 ├── ai_red_team/
 │   ├── tester.py              # Red-team engine
-│   ├── prompts.py             # 10 adversarial attack templates
+│   ├── prompts.py             # 19 adversarial attack templates
 │   └── cvss_scorer.py         # CVSS v3.1 scoring
 │
 ├── reports/
@@ -122,10 +166,11 @@ SecurityTool/
 │   └── validator.py           # Scope validation
 │
 ├── ui/
-│   └── terminal.py            # Rich terminal UI
+│   └── terminal.py            # Rich terminal UI (v2.2.0)
 │
 └── wordlists/
-    └── common.txt             # Gobuster wordlist
+    ├── common.txt             # Gobuster wordlist
+    └── params.txt             # Parameter discovery wordlist (300 names)
 ```
 
 ---
@@ -133,6 +178,6 @@ SecurityTool/
 ## Tech Stack
 
 - **Python 3.11+** · **Rich** (terminal UI) · **Requests** (HTTP)
-- **python-nmap** · **dnspython** · **xhtml2pdf** · **markdown2**
+- **dnspython** · **python-whois** · **xhtml2pdf** · **markdown2**
 - **Anthropic Claude API** (AI red-team engine)
 - **NVD API v2** (CVE database)
