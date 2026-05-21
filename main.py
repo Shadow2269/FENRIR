@@ -15,6 +15,7 @@ from reports.report_generator import (
     generate_waf_report, generate_dns_report,
     generate_http_methods_report, generate_ssrf_report,
     generate_lfi_report, generate_jwt_report, generate_xxe_report,
+    generate_idor_report, generate_fingerprint_report, generate_param_report,
 )
 
 
@@ -827,6 +828,103 @@ def run_xxe_mode(url: str):
     ui.print_report_saved(path)
 
 
+# ── Mode: IDOR Detector ───────────────────────────────────────────────────────
+
+def run_idor_mode(url: str):
+    from tools.idor_tester import test_idor
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    auth = ui.prompt_target("Authorization header (e.g. Bearer <token>) — leave empty to skip").strip()
+
+    ui.print_info(f"Probing numeric IDs in path segments and query params of: {url}")
+
+    with ui.spinner(f"IDOR scan {url} …") as prog:
+        task = prog.add_task("idor scan", total=None)
+        result = test_idor(url, auth_header=auth, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_idor_result(result)
+    path = generate_idor_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: Technology Fingerprint ─────────────────────────────────────────────
+
+def run_fingerprint_mode(url: str):
+    from tools.fingerprint_tool import fingerprint
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    ui.print_info(f"Fingerprinting: {url}")
+
+    with ui.spinner(f"Fingerprinting {url} …") as prog:
+        task = prog.add_task("fingerprint", total=None)
+        result = fingerprint(url, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_fingerprint_result(result)
+    path = generate_fingerprint_report(result)
+    ui.print_report_saved(path)
+
+
+# ── Mode: Parameter Discovery ────────────────────────────────────────────────
+
+def run_param_discovery_mode(url: str):
+    from tools.param_discovery import discover_params, _load_wordlist
+    from security.validator import is_allowed_target
+    from urllib.parse import urlparse
+
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    host = urlparse(url).hostname or url
+    confirmed = False
+    if not is_allowed_target(host):
+        if not ui.confirm_scan_target(url):
+            ui.print_error("Scan abgebrochen — keine Autorisierung.")
+            return
+        confirmed = True
+
+    wordlist = _load_wordlist()
+    total_tests = len(wordlist) * 2  # GET + POST
+    ui.print_info(
+        f"Testing {len(wordlist)} parameter names × 2 methods "
+        f"= {total_tests} probes against: {url}"
+    )
+
+    with ui.spinner(f"Param discovery {url} …") as prog:
+        task = prog.add_task("param discovery", total=None)
+        result = discover_params(url, confirmed=confirmed)
+        prog.update(task, completed=True)
+
+    ui.print_param_result(result)
+    path = generate_param_report(result)
+    ui.print_report_saved(path)
+
+
 # ── Interactive menu loop ─────────────────────────────────────────────────────
 
 def run_menu():
@@ -943,6 +1041,24 @@ def run_menu():
             url = ui.prompt_target("Target URL (XML endpoint, e.g. https://target.com/api/xml)")
             if url:
                 run_xxe_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "idor":
+            url = ui.prompt_target("Target URL with numeric ID (e.g. http://target.com/api/user/100)")
+            if url:
+                run_idor_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "fingerprint":
+            url = ui.prompt_target("Target URL (e.g. https://target.com)")
+            if url:
+                run_fingerprint_mode(url)
+                input("\n  Press Enter to return to menu …")
+
+        elif mode == "paramdiscovery":
+            url = ui.prompt_target("Target URL (e.g. http://target.com/api/endpoint)")
+            if url:
+                run_param_discovery_mode(url)
                 input("\n  Press Enter to return to menu …")
 
 

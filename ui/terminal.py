@@ -31,7 +31,7 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v2.0.0", style="bold white")
+    banner.append("  v2.1.0", style="bold white")
 
     console.print(Panel(
         banner,
@@ -61,9 +61,12 @@ MENU_OPTIONS = [
     ("d",  "ssrf",       "SSRF Scanner",    "Detect server-side request forgery via inband response analysis"),
     ("e",  "lfi",        "LFI Scanner",     "Test URL parameters for local/remote file inclusion vulnerabilities"),
     ("f",  "jwt",        "JWT Analyzer",    "Analyse a JWT token for alg:none, weak secrets, expiry, PII"),
-    ("g",  "xxe",        "XXE Scanner",     "Send XXE payloads to XML endpoints and check for file leakage"),
-    ("r",  "redteam",    "AI Red-Team",     "Fire adversarial prompts against an AI endpoint"),
-    ("0",  "quit",       "Exit",            "Quit the program"),
+    ("g",  "xxe",          "XXE Scanner",       "Send XXE payloads to XML endpoints and check for file leakage"),
+    ("h",  "idor",         "IDOR Detector",     "Probe numeric IDs in URL paths/params for unauthorized object access"),
+    ("i",  "fingerprint",  "Tech Fingerprint",  "Identify server, CMS, framework and frontend stack via headers + body"),
+    ("j",  "paramdiscovery","Param Discovery",  "Brute-force hidden GET/POST parameters using a 300-name wordlist"),
+    ("r",  "redteam",      "AI Red-Team",       "Fire adversarial prompts against an AI endpoint"),
+    ("0",  "quit",         "Exit",              "Quit the program"),
 ]
 
 
@@ -908,6 +911,147 @@ def print_xxe_result(result) -> None:
         table.add_row(Text(f.confidence, style=conf_color), f.payload_name, f.evidence[:70])
 
     console.print(Panel(table, title="[bold red]XXE Findings[/bold red]", border_style="red"))
+    console.print()
+
+
+# ── IDOR result ───────────────────────────────────────────────────────────────
+
+def print_idor_result(result) -> None:
+    console.print()
+    console.print(Rule(f"[bold]IDOR Detector — {result.base_url}[/bold]", style="red"))
+    console.print(
+        f"  IDs tested: [bold white]{result.tested}[/bold white]  |  "
+        f"Findings: [bold {'red' if result.findings else 'green'}]{len(result.findings)}[/bold {'red' if result.findings else 'green'}]"
+    )
+
+    if not result.success:
+        console.print(f"  [red]Error: {result.error}[/red]")
+        return
+
+    if not result.findings:
+        console.print(Panel("[green]No IDOR candidates detected.[/green]",
+                            title="[bold]IDOR Detector[/bold]", border_style="green"))
+        console.print()
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Loc",       width=6)
+    table.add_column("Param",     style="bold cyan",  width=18)
+    table.add_column("Orig ID",   width=10, justify="right")
+    table.add_column("Tested ID", width=10, justify="right")
+    table.add_column("Δ Len",     width=10, justify="right")
+    table.add_column("Status",    width=8)
+
+    for f in result.findings:
+        delta     = f.found_length - f.original_length
+        sign      = "+" if delta >= 0 else ""
+        delta_col = Text(f"{sign}{delta}B", style="bold yellow")
+        table.add_row(f.location, f.param_or_segment,
+                      str(f.original_id), str(f.tested_id),
+                      delta_col, str(f.status_code))
+
+    console.print(Panel(
+        table,
+        title=f"[bold red]IDOR Candidates ({len(result.findings)})[/bold red]",
+        subtitle="[dim]⚠ Manual verification required[/dim]",
+        border_style="red",
+    ))
+    console.print()
+
+
+# ── Fingerprint result ────────────────────────────────────────────────────────
+
+def print_fingerprint_result(result) -> None:
+    console.print()
+    console.print(Rule(f"[bold]Technology Fingerprint — {result.target}[/bold]", style="red"))
+
+    if not result.success:
+        console.print(f"  [red]Error: {result.error}[/red]")
+        return
+
+    if not result.technologies:
+        console.print(Panel("[dim]No technology signatures detected.[/dim]",
+                            title="[bold]Tech Fingerprint[/bold]", border_style="dim"))
+        console.print()
+        return
+
+    cat_colors = {
+        "server":    "bold cyan",
+        "cms":       "bold magenta",
+        "framework": "bold blue",
+        "language":  "bold yellow",
+        "frontend":  "green",
+        "security":  "dim green",
+        "other":     "dim",
+    }
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Category",   width=12)
+    table.add_column("Technology", style="bold white", width=20)
+    table.add_column("Confidence", width=10)
+    table.add_column("Evidence",   style="dim",        ratio=1)
+
+    for t in result.technologies:
+        cat_style = cat_colors.get(t.category, "white")
+        conf_style = "bold green" if t.confidence == "High" else ("yellow" if t.confidence == "Medium" else "dim")
+        table.add_row(
+            Text(t.category.title(), style=cat_style),
+            t.technology,
+            Text(t.confidence, style=conf_style),
+            t.evidence[:70] + ("…" if len(t.evidence) > 70 else ""),
+        )
+
+    console.print(Panel(table,
+                        title=f"[bold]{len(result.technologies)} technolog{'y' if len(result.technologies)==1 else 'ies'} detected[/bold]",
+                        border_style="dim red"))
+    console.print()
+
+
+# ── Parameter Discovery result ────────────────────────────────────────────────
+
+def print_param_result(result) -> None:
+    console.print()
+    console.print(Rule(f"[bold]Parameter Discovery — {result.target}[/bold]", style="red"))
+    console.print(
+        f"  Tested: [bold white]{result.tested}[/bold white]  |  "
+        f"GET findings: [bold {'red' if result.get_findings else 'green'}]{len(result.get_findings)}[/bold {'red' if result.get_findings else 'green'}]  |  "
+        f"POST findings: [bold {'red' if result.post_findings else 'green'}]{len(result.post_findings)}[/bold {'red' if result.post_findings else 'green'}]"
+    )
+
+    if not result.success:
+        console.print(f"  [red]Error: {result.error}[/red]")
+        return
+
+    if not result.findings:
+        console.print(Panel("[dim green]No hidden parameters discovered.[/dim green]",
+                            title="[bold]Param Discovery[/bold]", border_style="dim"))
+        console.print()
+        return
+
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
+    table.add_column("Method",    width=6)
+    table.add_column("Parameter", style="bold cyan",   width=22)
+    table.add_column("Evidence",  style="dim",          width=18)
+    table.add_column("Baseline",  width=10, justify="right")
+    table.add_column("Found",     width=10, justify="right")
+    table.add_column("Status",    width=8)
+
+    for f in result.findings:
+        delta     = f.found_length - f.baseline_length
+        sign      = "+" if delta >= 0 else ""
+        meth_col  = Text(f.method, style="bold yellow" if f.method == "POST" else "bold cyan")
+        table.add_row(
+            meth_col, f.name, f.evidence,
+            f"{f.baseline_length}B",
+            Text(f"{f.found_length}B ({sign}{delta})", style="bold yellow"),
+            str(f.status_code),
+        )
+
+    console.print(Panel(
+        table,
+        title=f"[bold yellow]Hidden Parameters Found ({len(result.findings)})[/bold yellow]",
+        border_style="yellow",
+    ))
     console.print()
 
 

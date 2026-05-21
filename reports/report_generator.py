@@ -2507,3 +2507,234 @@ def generate_xxe_report(result) -> str:
 
     _md_to_pdf("\n".join(lines), filename)
     return filename
+
+
+# ── IDOR Report ───────────────────────────────────────────────────────────────
+
+def generate_idor_report(result) -> str:
+    """Generate a PDF report from an IDORResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace(".", "_").replace("/", "_").replace(":", "_")
+    filename = f"{REPORT_DIR}/idor_{safe}_{ts}.pdf"
+
+    risk = "🔴 HIGH" if result.findings else "🟢 NONE"
+
+    lines = [
+        "# IDOR (Insecure Direct Object Reference) Scan Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target**           | `{result.base_url}` |",
+        f"| **Host**             | `{result.target}` |",
+        f"| **Status**           | {'Success' if result.success else 'Failed'} |",
+        f"| **IDs Tested**       | {result.tested} |",
+        f"| **Potential IDORs**  | {len(result.findings)} |",
+        f"| **Risk Level**       | {risk} |",
+        f"| **Timestamp**        | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.findings:
+        lines += [
+            "## Potential IDOR Findings",
+            "",
+            "> ⚠ These are **candidates** — manual verification is required.",
+            "",
+            "| Location | Parameter | Original ID | Probed ID | Δ Length | Status |",
+            "|---|---|---|---|---|---|",
+        ]
+        for f in result.findings:
+            delta = f.found_length - f.original_length
+            sign  = "+" if delta >= 0 else ""
+            lines.append(
+                f"| {f.location} | `{f.param_or_segment}` | {f.original_id} "
+                f"| {f.tested_id} | {sign}{delta}B | HTTP {f.status_code} |"
+            )
+        lines.append("")
+
+        for i, f in enumerate(result.findings, 1):
+            lines += [
+                f"### Finding {i} — {f.location.title()} parameter `{f.param_or_segment}`",
+                "",
+                f"- **Original URL:** `{f.original_url}`",
+                f"- **Tested URL:**   `{f.tested_url}`",
+                f"- **Detail:** {f.detail}",
+                "",
+            ]
+
+        lines += [
+            "## What is IDOR?",
+            "",
+            "Insecure Direct Object Reference occurs when a server exposes internal "
+            "object IDs (database rows, file names, user accounts) that an attacker "
+            "can enumerate to access resources belonging to other users.",
+            "",
+            "## Verification Steps",
+            "",
+            "1. Replicate the request in Burp Suite / browser devtools.",
+            "2. Compare response bodies — different users' data visible? → confirmed IDOR.",
+            "3. Test with two distinct authenticated sessions.",
+            "",
+            "## Remediation",
+            "",
+            "- Replace sequential numeric IDs with UUIDs.",
+            "- Enforce server-side ownership checks on every object access.",
+            "- Never trust client-supplied object IDs — always re-verify against the session.",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No IDOR candidates detected based on response-length differential analysis.",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── Fingerprint Report ────────────────────────────────────────────────────────
+
+def generate_fingerprint_report(result) -> str:
+    """Generate a PDF report from a FingerprintResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace(".", "_").replace("/", "_").replace(":", "_")
+    filename = f"{REPORT_DIR}/fingerprint_{safe}_{ts}.pdf"
+
+    lines = [
+        "# Technology Fingerprint Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target**        | `{result.target}` |",
+        f"| **Status Code**   | {result.status_code} |",
+        f"| **Technologies**  | {len(result.technologies)} detected |",
+        f"| **Timestamp**     | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.technologies:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    if result.technologies:
+        by_cat = result.by_category
+        cat_order = ["server", "cms", "framework", "language", "frontend", "security", "other"]
+
+        for cat in cat_order:
+            techs = by_cat.get(cat, [])
+            if not techs:
+                continue
+            lines += [f"## {cat.title()}", "", "| Technology | Confidence | Evidence |", "|---|---|---|"]
+            for t in techs:
+                lines.append(f"| **{t.technology}** | {t.confidence} | {t.evidence} |")
+            lines.append("")
+
+        lines += [
+            "## Detected HTTP Headers",
+            "",
+            "| Header | Value |",
+            "|---|---|",
+        ]
+        for hdr, val in result.headers.items():
+            if hdr.lower() in ("server", "x-powered-by", "x-generator", "via",
+                               "x-aspnet-version", "x-drupal-cache", "x-wp-total",
+                               "cf-ray", "x-sucuri-id"):
+                lines.append(f"| `{hdr}` | {val[:80]} |")
+        lines.append("")
+
+        lines += [
+            "## Attack Surface",
+            "",
+            "Use detected technologies to look up known CVEs and version-specific exploits:",
+            "",
+        ]
+        for t in result.technologies:
+            if t.category not in ("security",):
+                lines.append(f"- **{t.technology}** → search NVD / Exploit-DB for known vulnerabilities")
+        lines.append("")
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No technology signatures detected from headers, body patterns, or cookies.",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
+
+
+# ── Parameter Discovery Report ────────────────────────────────────────────────
+
+def generate_param_report(result) -> str:
+    """Generate a PDF report from a ParamResult object."""
+    _ensure_dir()
+    ts   = _timestamp()
+    safe = result.target.replace(".", "_").replace("/", "_").replace(":", "_")
+    filename = f"{REPORT_DIR}/paramdiscovery_{safe}_{ts}.pdf"
+
+    get_f  = result.get_findings
+    post_f = result.post_findings
+    risk   = "🟠 MEDIUM" if result.findings else "🟢 NONE"
+
+    lines = [
+        "# Parameter Discovery Report",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Target**          | `{result.target}` |",
+        f"| **Status**          | {'Success' if result.success else 'Failed'} |",
+        f"| **Parameters Tested** | {result.tested} |",
+        f"| **GET Findings**    | {len(get_f)} |",
+        f"| **POST Findings**   | {len(post_f)} |",
+        f"| **Risk Level**      | {risk} |",
+        f"| **Timestamp**       | {ts} |",
+        "",
+    ]
+
+    if result.error and not result.findings:
+        lines += ["## Error", "", f"> {result.error}", ""]
+
+    for method, findings in [("GET", get_f), ("POST", post_f)]:
+        if not findings:
+            continue
+        lines += [
+            f"## {method} Parameter Findings",
+            "",
+            "| Parameter | Evidence | Baseline Len | Found Len | Status |",
+            "|---|---|---|---|---|",
+        ]
+        for f in findings:
+            delta = f.found_length - f.baseline_length
+            sign  = "+" if delta >= 0 else ""
+            lines.append(
+                f"| `{f.name}` | {f.evidence} | {f.baseline_length}B "
+                f"| {f.found_length}B ({sign}{delta}) | HTTP {f.status_code} |"
+            )
+        lines.append("")
+
+    if result.findings:
+        lines += [
+            "## Next Steps",
+            "",
+            "- Manually test each discovered parameter for injection vulnerabilities.",
+            "- Try the discovered parameters with FENRIR's XSS, SQLi, SSRF, and LFI scanners.",
+            "- Hidden POST parameters may bypass client-side validation.",
+            "",
+        ]
+    else:
+        lines += [
+            "## Result",
+            "",
+            "No hidden parameters discovered based on response-length and status-code analysis.",
+            "",
+        ]
+
+    _md_to_pdf("\n".join(lines), filename)
+    return filename
