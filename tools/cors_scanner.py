@@ -14,11 +14,12 @@ from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from security.validator import is_allowed_target
 from logger import warn
+from opsec import get_headers, opsec_sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _TIMEOUT = 10
-_HEADERS = {"User-Agent": "Mozilla/5.0 (FENRIR security scanner)"}
+_HEADERS = get_headers()
 
 
 @dataclass
@@ -176,6 +177,7 @@ def scan_cors(url: str, confirmed: bool = False) -> CORSResult:
                 verify=False,
                 allow_redirects=True,
             )
+            opsec_sleep()
         except Exception as exc:
             if not result.error:
                 result.error = str(exc)

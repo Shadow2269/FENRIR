@@ -9,6 +9,7 @@ import re
 import requests
 import urllib3
 from dataclasses import dataclass, field
+from opsec import get_headers, opsec_sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -99,7 +100,7 @@ def scan_xxe(url: str) -> XXEResult:
 
     session = requests.Session()
     session.verify = False
-    session.headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    session.headers.update(get_headers())
 
     findings: list[XXEFinding] = []
     seen: set[str] = set()
@@ -113,10 +114,11 @@ def scan_xxe(url: str) -> XXEResult:
                 r = session.post(
                     url,
                     data=xml_body.encode("utf-8"),
-                    headers={"Content-Type": ct},
+                    headers={**get_headers(), "Content-Type": ct},
                     timeout=_TIMEOUT,
                     allow_redirects=False,
                 )
+                opsec_sleep()
                 body = r.text[:6000]
 
                 for pattern, label in _EVIDENCE_PATTERNS:

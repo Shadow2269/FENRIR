@@ -14,6 +14,7 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich import box
 import time
+from config import OPSEC_MODE
 
 console = Console()
 
@@ -31,13 +32,17 @@ def print_banner():
     banner.append("  ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝\n", style="bold red")
     banner.append("  Flexible Engine for Network Reconnaissance", style="dim")
     banner.append(" & Intelligent Red-teaming\n", style="dim")
-    banner.append("  v2.1.0", style="bold white")
+    banner.append("  v2.2.0", style="bold white")
+
+    subtitle = "[dim]Powered by Claude · nmap · NVD[/dim]"
+    if OPSEC_MODE:
+        subtitle = "[bold yellow]⚠ OPSEC MODE — stealth UA · slow nmap · request delays[/bold yellow]"
 
     console.print(Panel(
         banner,
         title="[bold red]FENRIR[/bold red]",
-        subtitle="[dim]Powered by Claude · nmap · NVD[/dim]",
-        border_style="red",
+        subtitle=subtitle,
+        border_style="dark_orange" if OPSEC_MODE else "red",
         padding=(0, 2),
     ))
     console.print()

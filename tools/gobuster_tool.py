@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from security.validator import validate_tool
 from logger import warn
+from config import OPSEC_MODE, OPSEC_USER_AGENT
 
 
 @dataclass
@@ -141,6 +142,10 @@ def run_gobuster(
             ),
         )
 
+    # ── OPSEC overrides ───────────────────────────────────────────────────────
+    if OPSEC_MODE:
+        threads = 1
+
     # ── Build command ─────────────────────────────────────────────────────────
     cmd = [
         gobuster_bin, "dir",
@@ -150,6 +155,9 @@ def run_gobuster(
         "--no-progress",    # cleaner output for parsing
         "--no-error",       # suppress connection errors per path
     ]
+
+    if OPSEC_MODE:
+        cmd += ["--delay", "1000ms", "-a", OPSEC_USER_AGENT]
 
     if extensions:
         cmd += ["-x", ",".join(extensions)]

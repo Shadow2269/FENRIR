@@ -11,11 +11,12 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from security.validator import is_allowed_target
+from opsec import get_headers
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _TIMEOUT = 10
-_HEADERS = {"User-Agent": "Mozilla/5.0 (FENRIR security scanner)"}
+_HEADERS = get_headers()
 
 
 @dataclass

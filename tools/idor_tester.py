@@ -14,11 +14,12 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from security.validator import is_allowed_target
+from opsec import get_headers, opsec_sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _TIMEOUT = 10
-_HEADERS = {"User-Agent": "Mozilla/5.0 (FENRIR security scanner)"}
+_HEADERS = get_headers()
 _OFFSETS = [1, 2, 5, 10, 50, 100]
 _LENGTH_DIFF_THRESHOLD = 0.15   # 15 % change flags a finding
 _MIN_BODY_LEN = 20              # ignore tiny "not found" pages for length math
@@ -62,6 +63,7 @@ def _fetch(url: str, auth_header: str = "") -> tuple[int, int]:
     try:
         r = requests.get(url, headers=hdrs, timeout=_TIMEOUT,
                          allow_redirects=False, verify=False)
+        opsec_sleep()
         return r.status_code, len(r.content)
     except Exception:
         return -1, 0

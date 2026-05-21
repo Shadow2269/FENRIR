@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
 from security.validator import is_allowed_target
+from opsec import get_headers, opsec_sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _TIMEOUT        = 8
-_HEADERS        = {"User-Agent": "Mozilla/5.0 (FENRIR security scanner)"}
+_HEADERS        = get_headers()
 _WORDLIST_PATH  = os.path.join(os.path.dirname(__file__), "..", "wordlists", "params.txt")
 _PROBE_VALUE    = "FENRIR1337"
 _LENGTH_DELTA   = 0.10      # 10 % length change → interesting
@@ -72,6 +73,7 @@ def _get_baseline(url: str) -> tuple[int, int]:
     try:
         r = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT,
                          verify=False, allow_redirects=True)
+        opsec_sleep()
         return r.status_code, len(r.content)
     except Exception:
         return -1, 0

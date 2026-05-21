@@ -11,6 +11,7 @@ import requests
 import urllib3
 from dataclasses import dataclass, field
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from opsec import get_headers, opsec_sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -100,7 +101,7 @@ def test_ssrf(url: str) -> SSRFResult:
 
     session = requests.Session()
     session.verify = False
-    session.headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    session.headers.update(get_headers())
 
     findings: list[SSRFFinding] = []
     seen: set[tuple[str, str]] = set()
@@ -110,6 +111,7 @@ def test_ssrf(url: str) -> SSRFResult:
             test_url = _inject_payload(url, param, payload)
             try:
                 r = session.get(test_url, timeout=_TIMEOUT, allow_redirects=True)
+                opsec_sleep()
                 body = r.text[:8000]
 
                 for pattern, label in _EVIDENCE_PATTERNS:

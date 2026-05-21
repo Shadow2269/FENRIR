@@ -10,11 +10,12 @@ import urllib3
 from urllib.parse import urlparse, urlencode, parse_qs, urljoin
 from dataclasses import dataclass, field
 from security.validator import is_allowed_target
+from opsec import get_headers, opsec_sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _TIMEOUT = 10
-_HEADERS = {"User-Agent": "Mozilla/5.0 (FENRIR security scanner)"}
+_HEADERS = get_headers()
 
 # Common redirect parameters found in real-world applications
 _REDIRECT_PARAMS = [
@@ -126,6 +127,7 @@ def scan_redirect(url: str, confirmed: bool = False) -> RedirectResult:
                     verify=False,
                     allow_redirects=False,  # inspect Location directly
                 )
+                opsec_sleep()
             except Exception as exc:
                 if not result.error:
                     result.error = str(exc)
