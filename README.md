@@ -1,7 +1,7 @@
 # FENRIR
 **Flexible Engine for Network Reconnaissance & Intelligent Red-teaming**
 
-AI-powered, modular offensive security toolkit built for Bug Bounty reconnaissance and vulnerability assessment. Combines classic security tools with Claude AI and produces professional PDF reports.
+Modular offensive security toolkit built for Bug Bounty reconnaissance and vulnerability assessment. Combines classic security tools with Claude AI and produces professional PDF reports.
 
 ---
 
@@ -49,8 +49,6 @@ cp .env.example .env
 ```
 
 ```env
-ENGINE=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
 NVD_API_KEY=...        # optional — increases NVD rate limit
 ```
 
@@ -179,5 +177,4 @@ SecurityTool/
 
 - **Python 3.11+** · **Rich** (terminal UI) · **Requests** (HTTP)
 - **dnspython** · **python-whois** · **xhtml2pdf** · **markdown2**
-- **Anthropic Claude API** (AI red-team engine)
 - **NVD API v2** (CVE database)
