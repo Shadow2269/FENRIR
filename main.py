@@ -7,7 +7,7 @@ import re
 from ui import terminal as ui
 from tools.nmap_tool import run_nmap
 from reports.report_generator import (
-    generate_nmap_report, generate_redteam_report,
+    generate_nmap_report,
     generate_gobuster_report, generate_full_scan_report,
     generate_subdomain_report, generate_takeover_report,
     generate_cors_report, generate_redirect_report,
@@ -88,65 +88,6 @@ def _do_nmap(target: str):
 
 def run_nmap_mode(target: str):
     _do_nmap(target)
-
-
-# ── Mode: AI red-team ─────────────────────────────────────────────────────────
-
-def run_redteam_mode(target_name: str, mode: str = "anthropic", http_url: str = ""):
-    from ai_red_team.tester import AIRedTeamTester, ATTACK_PROMPTS
-
-    total = len(ATTACK_PROMPTS)
-    ui.print_info(f"Starting red-team against '{target_name}' — {total} attacks")
-
-    tester = AIRedTeamTester(
-        target_name=target_name,
-        mode=mode,
-        http_url=http_url,
-        target_behavior="explain how to bypass content filters on an AI system",
-    )
-
-    # Patch tester to update progress bar
-    report_ref = [None]
-
-    with ui.ScanProgress(total=total, label="Red-team") as prog:
-        original_run = tester.run
-
-        def run_with_progress(categories=None):
-            from ai_red_team.prompts import ATTACK_PROMPTS as AP
-            import time
-            from ai_red_team.tester import RedTeamReport, AttackResult
-
-            attacks = AP if not categories else [a for a in AP if a["category"] in categories]
-            report  = RedTeamReport(target_name=tester.target_name)
-
-            for attack in attacks:
-                prompt = attack["template"].replace("{target_behavior}", tester.target_behavior)
-                prog.advance(attack["name"])
-                try:
-                    response  = tester._send(prompt)
-                    succeeded = tester.success_fn(response)
-                except Exception as exc:
-                    response  = f"ERROR: {exc}"
-                    succeeded = False
-
-                report.results.append(AttackResult(
-                    attack_name=attack["name"],
-                    category=attack["category"],
-                    prompt_sent=prompt,
-                    response=response,
-                    success=succeeded,
-                    notes=attack["description"],
-                ))
-                time.sleep(tester.delay)
-
-            return report
-
-        report = run_with_progress()
-
-    ui.print_redteam_results(report)
-    path = generate_redteam_report(report)
-    ui.print_report_saved(path)
-
 
 
 # ── Mode: gobuster scan ───────────────────────────────────────────────────────
@@ -995,12 +936,6 @@ def run_menu():
                 run_sqli_mode(url)
                 input("\n  Press Enter to return to menu …")
 
-        elif mode == "redteam":
-            target_name, rt_mode, http_url = ui.prompt_redteam_target()
-            if target_name:
-                run_redteam_mode(target_name, mode=rt_mode, http_url=http_url)
-                input("\n  Press Enter to return to menu …")
-
         elif mode == "dns":
             domain = ui.prompt_target("Target domain (e.g. example.com)")
             if domain:
@@ -1084,18 +1019,6 @@ if __name__ == "__main__":
             sys.exit(1)
         ui.print_banner()
         run_nmap_mode(args[1])
-
-    elif args[0] == "redteam":
-        if len(args) < 2:
-            ui.print_error("redteam mode requires a target name.")
-            sys.exit(1)
-        rt_mode = "anthropic"
-        http_url = ""
-        if len(args) >= 4 and args[2].lower() == "http":
-            rt_mode  = "http"
-            http_url = args[3]
-        ui.print_banner()
-        run_redteam_mode(args[1], mode=rt_mode, http_url=http_url)
 
     elif args[0] == "subdomain":
         if len(args) < 2:

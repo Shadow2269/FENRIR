@@ -34,7 +34,7 @@ def print_banner():
     banner.append(" & Intelligent Red-teaming\n", style="dim")
     banner.append("  v2.2.0", style="bold white")
 
-    subtitle = "[dim]Powered by Claude · nmap · NVD[/dim]"
+    subtitle = "[dim]Powered by nmap · NVD[/dim]"
     if OPSEC_MODE:
         subtitle = "[bold yellow]⚠ OPSEC MODE — stealth UA · slow nmap · request delays[/bold yellow]"
 
@@ -70,7 +70,6 @@ MENU_OPTIONS = [
     ("h",  "idor",         "IDOR Detector",     "Probe numeric IDs in URL paths/params for unauthorized object access"),
     ("i",  "fingerprint",  "Tech Fingerprint",  "Identify server, CMS, framework and frontend stack via headers + body"),
     ("j",  "paramdiscovery","Param Discovery",  "Brute-force hidden GET/POST parameters using a 300-name wordlist"),
-    ("r",  "redteam",      "AI Red-Team",       "Fire adversarial prompts against an AI endpoint"),
     ("0",  "quit",         "Exit",              "Quit the program"),
 ]
 
@@ -141,16 +140,6 @@ def confirm_scan_target(target: str) -> bool:
     )
 
 
-def prompt_redteam_target() -> tuple[str, str, str]:
-    """Returns (target_name, mode, http_url)."""
-    name = Prompt.ask("[bold red]>[/bold red] Target AI name (e.g. my-chatbot)").strip()
-    use_http = Confirm.ask("Does the target expose an HTTP endpoint?", default=False)
-    if use_http:
-        url = Prompt.ask("[bold red]>[/bold red] HTTP URL").strip()
-        return name, "http", url
-    return name, "anthropic", ""
-
-
 # ── Spinner / progress helpers ────────────────────────────────────────────────
 
 def spinner(label: str):
@@ -172,13 +161,12 @@ def spinner(label: str):
 
 class ScanProgress:
     """
-    Multi-step progress bar for sequential operations
-    (e.g. red-team: N attacks).
+    Multi-step progress bar for sequential operations.
 
     Usage:
-        with ScanProgress(total=10, label="Attacks") as p:
-            for attack in attacks:
-                p.advance(attack_name)
+        with ScanProgress(total=10, label="Progress") as p:
+            for item in items:
+                p.advance(item_name)
     """
     def __init__(self, total: int, label: str = "Progress"):
         self._total = total
@@ -310,56 +298,6 @@ def print_cve_results(cve_results: list):
                   else "dim yellow" if unverified
                   else "dim")
         console.print(Panel(Group(*parts), title=title, border_style=border))
-
-
-def print_redteam_results(report):
-    """Display red-team attack results with CVSS scores."""
-    console.print()
-    console.print(Rule("[bold]Red-Team Results[/bold]", style="red"))
-
-    # Summary header
-    rate = report.success_rate
-    rate_color = "red" if rate >= 0.5 else ("yellow" if rate >= 0.2 else "green")
-
-    summary = Table(box=box.SIMPLE, show_header=False, padding=(0, 2), show_edge=False)
-    summary.add_column("k", style="dim", width=20)
-    summary.add_column("v", style="bold white")
-    summary.add_row("Target AI",    report.target_name)
-    summary.add_row("Total Attacks", str(len(report.results)))
-    summary.add_row("Bypassed",     f"[{rate_color}]{len(report.successful_attacks)}[/{rate_color}]")
-    summary.add_row("Bypass Rate",  f"[{rate_color}]{rate:.0%}[/{rate_color}]")
-    console.print(Panel(summary, title="[bold]Summary[/bold]", border_style="dim red"))
-    console.print()
-
-    # Per-attack table
-    table = Table(box=box.SIMPLE_HEAD, show_edge=False, padding=(0, 1))
-    table.add_column("Result",    width=4,  justify="center")
-    table.add_column("Attack",    style="white bold", ratio=2)
-    table.add_column("Category", style="dim",          width=12)
-    table.add_column("CVSS",     width=6,  justify="right")
-    table.add_column("Severity", width=10)
-
-    for r in report.results:
-        from ai_red_team.cvss_scorer import score_attack
-        cvss = score_attack(r.category, r.success)
-
-        icon = "🔴" if r.success else "🟢"
-        sev_color = {
-            "Critical": "bold red",
-            "High":     "bold yellow",
-            "Medium":   "yellow",
-            "Low":      "green",
-        }.get(cvss.severity if cvss else "", "dim")
-
-        table.add_row(
-            icon,
-            r.attack_name,
-            r.category,
-            f"{cvss.score:.1f}" if cvss else "—",
-            Text(cvss.severity if cvss else "—", style=sev_color),
-        )
-
-    console.print(table)
 
 
 def confirm_gobuster() -> bool:

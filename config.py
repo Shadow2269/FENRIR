@@ -7,19 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Engine-Option ────────────────────────────────────────────────────────────
-# "local"      → local Mistral-Modell  (engines/engine_local.py)
-# "anthropic"  → Anthropic Cloud API   (engines/engine_anthropic.py)
-ENGINE: str = os.getenv("ENGINE", "local")
-
 # ── API Keys ──────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-NVD_API_KEY: str = os.getenv("NVD_API_KEY", "")      
-HF_TOKEN: str = os.getenv("HF_TOKEN", "")          #
+NVD_API_KEY: str = os.getenv("NVD_API_KEY", "")
 
-# ── AI Engine ─────────────────────────────────────────────────────────────────
-AI_MODEL: str = "claude-sonnet-4-5"          
-MAX_TOKENS: int = 2048
 DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
 
 # ── Allowed attack tools ──────────────────────────────────────────────────────

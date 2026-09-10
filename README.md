@@ -1,7 +1,7 @@
 # FENRIR
 **Flexible Engine for Network Reconnaissance & Intelligent Red-teaming**
 
-Modular offensive security toolkit built for Bug Bounty reconnaissance and vulnerability assessment. Combines classic security tools with Claude AI and produces professional PDF reports.
+Modular offensive security toolkit built for Bug Bounty reconnaissance and vulnerability assessment. Produces professional PDF reports.
 
 ---
 
@@ -28,7 +28,6 @@ Modular offensive security toolkit built for Bug Bounty reconnaissance and vulne
 | h | `idor` | IDOR Detector | Probes numeric IDs in URL path segments and query params (±1/5/10/50/100 offsets) |
 | i | `fingerprint` | Tech Fingerprint | Identifies server, CMS, framework, language and frontend via headers, body patterns, cookies and favicon hash |
 | j | `paramdiscovery` | Param Discovery | Brute-forces 300 hidden GET/POST parameters via response-length differential |
-| r | `redteam` | AI Red-Team | Fires 19 adversarial prompts against AI endpoints with CVSS scoring |
 
 Every tool produces a **PDF report** saved to the `result/` directory.
 
@@ -97,7 +96,6 @@ python main.py cors        https://api.example.com/user
 python main.py redirect    https://target.com/login
 python main.py xss         http://target.com/search?q=test
 python main.py sqli        http://target.com/items?id=1
-python main.py redteam     MyBot
 ```
 
 ---
@@ -151,11 +149,6 @@ SecurityTool/
 │   ├── param_discovery.py     # Hidden parameter discovery (300-name wordlist)
 │   ├── version_probe.py       # Active version probing for hidden service versions
 │   └── json_export.py         # Structured JSON export for LOKI
-│
-├── ai_red_team/
-│   ├── tester.py              # Red-team engine
-│   ├── prompts.py             # 19 adversarial attack templates
-│   └── cvss_scorer.py         # CVSS v3.1 scoring
 │
 ├── reports/
 │   └── report_generator.py    # PDF report generation (all tools)

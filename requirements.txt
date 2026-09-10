@@ -1,5 +1,4 @@
 # FENRIR — Flexible Engine for Network Reconnaissance & Intelligent Red-teaming
-anthropic>=0.25.0
 python-dotenv>=1.0.0
 rich>=13.7.0
 markdown2>=2.4.13
